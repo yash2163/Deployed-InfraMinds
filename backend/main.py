@@ -83,3 +83,15 @@ def simulate_explain(req: ExplainRequest):
     Uses LLM to explain the impact of the graph traversal.
     """
     return agent.explain_impact(req.target_node_id, req.affected_nodes)
+
+from generator import TerraformGenerator
+
+@app.get("/agent/export")
+def agent_export():
+    """
+    Phase 4: Terraform Code Generator.
+    Returns the HCL code for the current graph.
+    """
+    gen = TerraformGenerator(agent.graph)
+    files = gen.generate()
+    return files
