@@ -101,9 +101,23 @@ class InfraAgent:
         # Rule 2: Security Groups - No Open SSH
         for res in plan.add_resources:
             if res.type == "aws_security_group":
-                ingress = str(res.properties.get("ingress", ""))
-                if "22" in ingress and "0.0.0.0/0" in ingress:
-                    violations.append(f"Security Policy Violation: SG '{res.id}' allows SSH (22) from everywhere. Restricted Access Required.")
+                # Robust check for ingress as list of rule objects
+                ingress_rules = res.properties.get("ingress", [])
+                # Normalize logic: ingress might be a list of dicts, or if simplistic, generic structure
+                if isinstance(ingress_rules, list):
+                    for rule in ingress_rules:
+                        if isinstance(rule, dict):
+                            # extract protocol and ports logic (simplistic)
+                            from_port = rule.get("from_port", 0)
+                            to_port = rule.get("to_port", 0)
+                            cidr_blocks = rule.get("cidr_blocks", [])
+                            
+                            # Check if 22 is in range or explicit
+                            is_ssh = (from_port == 22) or (from_port <= 22 and to_port >= 22)
+                            is_open_world = "0.0.0.0/0" in cidr_blocks or "0.0.0.0/0" in str(cidr_blocks)
+                            
+                            if is_ssh and is_open_world:
+                                violations.append(f"Security Policy Violation: SG '{res.id}' allows SSH (22) from the entire internet. Limit CIDR.")
         
         return violations
 
@@ -123,7 +137,10 @@ class InfraAgent:
         
         Rules:
         - AWS Resources only (aws_vpc, aws_subnet, aws_instance, aws_security_group, aws_db_instance, aws_lb).
-        - Connect resources logically (subnet -> vpc, instance -> subnet).
+        - Edge Direction is STRICT: Parent -> Child.
+        - Example: VPC -> Subnet -> Instance. 
+        - Example: ALB -> Target Group -> Instance.
+        - NEVER do Instance -> Subnet.
         - If deleting, be precise with IDs.
         
         Output JSON matching PlanDiff schema:
@@ -268,6 +285,7 @@ class InfraAgent:
             "target_node": "{target_node_id}",
             "impact_level": "High",
             "affected_count": {len(affected_nodes)},
+            "affected_node_ids": {json.dumps(affected_nodes)},
             "explanation": "...",
             "mitigation_strategy": "..."
         }}

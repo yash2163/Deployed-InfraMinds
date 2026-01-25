@@ -34,5 +34,6 @@ class BlastAnalysis(BaseModel):
     target_node: str
     impact_level: Literal["Low", "Medium", "High", "Critical"]
     affected_count: int
+    affected_node_ids: List[str] = Field(default_factory=list, description="List of downstream resource IDs affected")
     explanation: str = Field(..., description="Detailed AI explanation of why these nodes are affected")
     mitigation_strategy: str = Field(..., description="How to safely handle this deletion")
