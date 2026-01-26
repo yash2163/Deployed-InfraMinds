@@ -11,6 +11,8 @@ load_dotenv()
 # Configure Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+from pipeline import PipelineManager, PipelineResult
+
 class InfraAgent:
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -20,6 +22,7 @@ class InfraAgent:
         self.graph.add_edge("vpc-main", "subnet-public", relation="contains")
         
         self.model = genai.GenerativeModel('gemini-2.5-pro')
+        self.pipeline = PipelineManager(self.model)
 
     def think(self, user_prompt: str) -> IntentAnalysis:
         """
@@ -301,4 +304,66 @@ class InfraAgent:
                 affected_count=len(affected_nodes),
                 explanation=f"AI Analysis Failed: {str(e)}",
                 mitigation_strategy="Manual Review Required"
+            )
+
+    def generate_terraform_agentic(self, user_prompt: str) -> PipelineResult:
+        """
+        Stage 1 (Draft): Generates HCL + Python Test Script using Gemini,
+        then delegates to PipelineManager for the 5-stage validation loop.
+        """
+        # 0. Sync Graph State (Auto-update graph based on intent)
+        # We try to apply the changes to the internal graph first so the visualizer updates.
+        try:
+             plan = self.plan_changes(user_prompt)
+             if not plan.logs or not any("FAILED" in log for log in plan.logs):
+                 self.apply_diff(plan)
+        except Exception as e:
+             print(f"Graph Sync Warning: Could not update internal graph: {e}")
+
+        # 1. Draft Code using current state context
+        current_state = self.export_state().model_dump_json()
+        
+        prompt = f"""
+        You are a Senior DevOps Engineer. 
+        Task: Write Terraform HCL code and a Python Verification Script for the user request.
+        
+        Context (Current Infrastructure):
+        {current_state}
+        
+        User Request: "{user_prompt}"
+        
+        Requirement 1 (Terraform):
+        - Output a valid `main.tf` content. 
+        - Use localstack compliant providers if needed (or standard AWS, we use tflocal).
+        
+        Requirement 2 (Verification - Python):
+        - Output a `test_infra.py` script.
+        - Using `boto3` (configured for localstack endpoint_url='http://localhost:4566').
+        - It should check if the resources exist/work.
+        - Print "VERIFICATION SUCCESS" if passes, or raise Exception.
+        
+        Output Format (JSON):
+        {{
+            "hcl_code": "...",
+            "test_script": "..."
+        }}
+        """
+        
+        response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        
+        try:
+            data = json.loads(response.text)
+            hcl_code = data.get("hcl_code", "")
+            test_script = data.get("test_script", "")
+            
+            # Start the Pipeline
+            return self.pipeline.run_pipeline(hcl_code, test_script)
+            
+        except Exception as e:
+            # Fallback if AI fails to generate JSON
+            return PipelineResult(
+                success=False, 
+                hcl_code="", 
+                stages=[], 
+                final_message=f"Agent Draft Failed: {str(e)}"
             )

@@ -61,45 +61,52 @@ export default function Home() {
     }
   };
 
+  /* Agentic Deployment Handler */
   const handleExecute = async () => {
     if (!input.trim()) return;
     setLoading(true);
-    setResponse(null); // Clear intent response to show logs
-    setExecutionLogs(["Initializing Plan..."]);
+    setResponse(null);
+    setExecutionLogs(["Initializing Agentic Pipeline..."]);
 
     try {
-      // 1. Plan
-      const plan = await import('../lib/api').then(m => m.generatePlan(input));
-      console.log("Plan generated:", plan);
-      setExecutionLogs(prev => [...prev, "Plan Generated.", "Validating Policies..."]);
+      // 1. Trigger the Self-Healing Loop on Backend
+      const pipelineResult = await import('../lib/api').then(m => m.deployAgentic(input));
 
-      if (plan.logs && plan.logs.length > 0) {
-        // Add a small delay to simulate reading
-        await new Promise(r => setTimeout(r, 800));
-        setExecutionLogs(prev => [...prev, ...plan.logs]);
+      console.log("Pipeline Result:", pipelineResult);
+
+      if (pipelineResult.success) {
+        // Success Path
+        const logs: string[] = [];
+
+        pipelineResult.stages.forEach(stage => {
+          const symbol = stage.status === 'success' ? '✅' : '❌';
+          logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
+          if (stage.logs) {
+            // Show last few logs lines to keep UI clean
+            stage.logs.slice(-3).forEach(l => logs.push(`   > ${l.substring(0, 60)}...`));
+          }
+          if (stage.error) {
+            logs.push(`   CRITICAL: ${stage.error}`);
+            logs.push(`   >> Triggering Auto-Repair...`);
+          }
+        });
+
+        logs.push(`🎉 ${pipelineResult.final_message}`);
+        setExecutionLogs(logs);
+
+      } else {
+        // Failure Path
+        const logs: string[] = ["❌ Pipeline Failed."];
+        pipelineResult.stages.forEach(stage => {
+          logs.push(`[${stage.name}]: ${stage.status}`);
+          if (stage.error) logs.push(`Error: ${stage.error}`);
+        });
+        setExecutionLogs(logs);
       }
 
-      // 2. Apply (Mutation)
-      await import('../lib/api').then(m => m.applyPlan(plan));
-      setExecutionLogs(prev => [...prev, "Graph Mutated.", "Deploying to LocalStack..."]);
-
-      // 3. Verification Fake-Out
-      await new Promise(r => setTimeout(r, 1500));
-      setExecutionLogs(prev => [...prev, ">> terraform apply -auto-approve", "Resources Creating..."]);
-
-      await new Promise(r => setTimeout(r, 1200));
-      setExecutionLogs(prev => [...prev, ">> Verifying Connectivity...", "curl http://localhost:80"]);
-
-      await new Promise(r => setTimeout(r, 800));
-      setExecutionLogs(prev => [...prev, "HTTP 200 OK", "Verification PASSED."]);
-
-      alert("Plan Executed & Verified!");
-      setInput("");
-      // window.location.reload(); // Removed to keep logs visible. Graph polls every 5s.
     } catch (e) {
       console.error(e);
-      alert("Execution Failed");
-      setExecutionLogs(prev => [...prev, "Execution Failed: " + String(e)]);
+      setExecutionLogs(prev => [...prev, "Critical Failure: Backend Unreachable or Timeout."]);
     } finally {
       setLoading(false);
     }

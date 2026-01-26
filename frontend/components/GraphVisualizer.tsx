@@ -113,40 +113,109 @@ export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps
         return () => clearInterval(interval);
     }, [refreshGraph]);
 
-    const onNodeClick: NodeMouseHandler = async (_, node) => {
-        try {
-            console.log("Simulating blast radius for:", node.id);
-            const result = await simulateBlastRadius(node.id);
-            const impacted = new Set<string>(result.affected_nodes as string[]);
-            impacted.add(node.id); // Highlight selected node too
-            setAffectedNodeIds(impacted);
+    // Context Menu State
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, id: string, type: 'node' | 'edge' } | null>(null);
 
-            // Notify parent to explain the blast radius
-            if (onNodeSelected) {
-                onNodeSelected(node.id);
+    const onNodeClick: NodeMouseHandler = (event, node) => {
+        event.preventDefault();
+        event.stopPropagation(); // Prevent container click from closing menu
+        setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            id: node.id,
+            type: 'node'
+        });
+    };
+
+    const onEdgeClick = (event: React.MouseEvent, edge: Edge) => {
+        event.preventDefault();
+        event.stopPropagation(); // Prevent container click from closing menu
+        setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            id: edge.id,
+            type: 'edge'
+        });
+    }
+
+    const handleAction = (action: 'details' | 'delete') => {
+        if (!contextMenu) return;
+
+        if (action === 'delete') {
+            if (contextMenu.type === 'node') {
+                console.log("Simulating blast radius for:", contextMenu.id);
+                simulateBlastRadius(contextMenu.id).then(result => {
+                    const impacted = new Set<string>(result.affected_nodes as string[]);
+                    impacted.add(contextMenu.id);
+                    setAffectedNodeIds(impacted);
+
+                    if (onNodeSelected) {
+                        onNodeSelected(contextMenu.id);
+                    }
+                });
+            } else {
+                alert("Impact Analysis for Edge Deletion is coming in v2.0!");
             }
-
-            // Trigger immediate refresh to show styling
-            // refreshGraph will happen naturally on next poll, but we force updating nodes locally if we wanted
-            // but relying on poll/effect is cleaner if we just update state.
-        } catch (e) {
-            console.error("Blast radius failed", e);
+        } else if (action === 'details') {
+            if (contextMenu.type === 'node') {
+                const node = nodes.find(n => n.id === contextMenu.id);
+                if (node) alert(`Resource Details:\n\n${JSON.stringify(node.data, null, 2)}`);
+            } else {
+                const edge = edges.find(e => e.id === contextMenu.id);
+                if (edge) alert(`Connection Details:\n\nSource: ${edge.source}\nTarget: ${edge.target}\nRelation: ${edge.label}`);
+            }
         }
+        setContextMenu(null);
     };
 
     return (
-        <div style={{ width: '100%', height: '600px', border: '1px solid #ccc', borderRadius: '8px' }}>
+        <div style={{ width: '100%', height: '600px', border: '1px solid #ccc', borderRadius: '8px', position: 'relative' }} onClick={() => setContextMenu(null)}>
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
+                onEdgeClick={onEdgeClick}
                 fitView
             >
                 <Background />
                 <Controls />
             </ReactFlow>
+
+            {/* Context Menu Overlay */}
+            {contextMenu && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        top: contextMenu.y,
+                        left: contextMenu.x,
+                        zIndex: 1000,
+                        backgroundColor: '#1e293b',
+                        border: '1px solid #475569',
+                        borderRadius: '6px',
+                        padding: '4px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '2px',
+                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <button
+                        onClick={() => handleAction('details')}
+                        className="px-4 py-2 text-sm text-slate-200 hover:bg-slate-700 rounded text-left"
+                    >
+                        View {contextMenu.type === 'node' ? 'Resource' : 'Connection'} Details
+                    </button>
+                    <button
+                        onClick={() => handleAction('delete')}
+                        className="px-4 py-2 text-sm text-red-400 hover:bg-red-900/30 rounded text-left"
+                    >
+                        Simulate {contextMenu.type === 'node' ? 'Deletion' : 'One Cut'}
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

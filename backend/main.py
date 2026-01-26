@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from agent import InfraAgent
-from schemas import GraphState, PlanDiff, IntentAnalysis, BlastAnalysis
+from schemas import GraphState, PlanDiff, IntentAnalysis, BlastAnalysis, PipelineResult
 
 app = FastAPI(title="InfraMinds Agent Core")
 
@@ -95,3 +95,12 @@ def agent_export():
     gen = TerraformGenerator(agent.graph)
     files = gen.generate()
     return files
+
+@app.post("/agent/deploy")
+def agent_deploy(request: PromptRequest):
+    """
+    Triggers the Agentic Self-Healing Pipeline.
+    Returns the full log of Draft -> Validate -> Plan -> Apply -> Verify.
+    """
+    result = agent.generate_terraform_agentic(request.prompt)
+    return result

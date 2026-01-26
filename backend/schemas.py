@@ -37,3 +37,15 @@ class BlastAnalysis(BaseModel):
     affected_node_ids: List[str] = Field(default_factory=list, description="List of downstream resource IDs affected")
     explanation: str = Field(..., description="Detailed AI explanation of why these nodes are affected")
     mitigation_strategy: str = Field(..., description="How to safely handle this deletion")
+
+class PipelineStage(BaseModel):
+    name: str 
+    status: str 
+    logs: List[str]
+    error: Optional[str] = None
+
+class PipelineResult(BaseModel):
+    success: bool
+    hcl_code: str
+    stages: List[PipelineStage]
+    final_message: str
