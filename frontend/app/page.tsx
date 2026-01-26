@@ -79,12 +79,16 @@ export default function Home() {
         const logs: string[] = [];
 
         pipelineResult.stages.forEach(stage => {
-          const symbol = stage.status === 'success' ? '✅' : '❌';
+          const symbol = stage.status === 'success' ? '✅' : (stage.status === 'warning' ? '⚠️' : '❌');
           logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
-          if (stage.logs) {
-            // Show last few logs lines to keep UI clean
-            stage.logs.slice(-3).forEach(l => logs.push(`   > ${l.substring(0, 60)}...`));
+
+          if (stage.logs && stage.logs.length > 0) {
+            stage.logs.forEach(l => {
+              // If it's a detail log, indent it
+              logs.push(`   > ${l}`);
+            });
           }
+
           if (stage.error) {
             logs.push(`   CRITICAL: ${stage.error}`);
             logs.push(`   >> Triggering Auto-Repair...`);
@@ -99,6 +103,9 @@ export default function Home() {
         const logs: string[] = ["❌ Pipeline Failed."];
         pipelineResult.stages.forEach(stage => {
           logs.push(`[${stage.name}]: ${stage.status}`);
+          if (stage.logs) {
+            stage.logs.forEach(l => logs.push(`   > ${l}`));
+          }
           if (stage.error) logs.push(`Error: ${stage.error}`);
         });
         setExecutionLogs(logs);
@@ -117,6 +124,12 @@ export default function Home() {
 
   const handleViewCode = async () => {
     try {
+      if (tfCode) {
+        // If we have code from the latest deployment, show it
+        setShowCode(true);
+        return;
+      }
+      // Fallback to legacy graph export
       const files = await import('../lib/api').then(m => m.exportTerraform());
       setTfCode(files["main.tf"] || "No code generated.");
       setShowCode(true);

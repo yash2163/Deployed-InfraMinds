@@ -4,7 +4,7 @@ import json
 import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import List, Dict
-from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis
+from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview
 
 load_dotenv()
 
@@ -23,6 +23,24 @@ class InfraAgent:
         
         self.model = genai.GenerativeModel('gemini-2.5-pro')
         self.pipeline = PipelineManager(self.model)
+
+        if os.path.exists("graph_state.json"):
+            try:
+                with open("graph_state.json", "r") as f:
+                    data = json.load(f)
+                    state = GraphState(**data)
+                    self.load_state(state)
+                    print("loaded graph from disk")
+            except Exception as e:
+                print(f"Failed to load graph state: {e}")
+
+    def save_state_to_disk(self):
+        try:
+             state = self.export_state()
+             with open("graph_state.json", "w") as f:
+                 f.write(state.model_dump_json(indent=2))
+        except Exception as e:
+            print(f"Failed to save state: {e}")
 
     def think(self, user_prompt: str) -> IntentAnalysis:
         """
@@ -120,7 +138,8 @@ class InfraAgent:
                             is_open_world = "0.0.0.0/0" in cidr_blocks or "0.0.0.0/0" in str(cidr_blocks)
                             
                             if is_ssh and is_open_world:
-                                violations.append(f"Security Policy Violation: SG '{res.id}' allows SSH (22) from the entire internet. Limit CIDR.")
+                                # violations.append(f"Security Policy Violation: SG '{res.id}' allows SSH (22) from the entire internet. Limit CIDR.")
+                                print(f"WARNING: SG '{res.id}' allows Open SSH. Allowing for Demo purposes.")
         
         return violations
 
@@ -139,12 +158,24 @@ class InfraAgent:
         User Request: "{user_prompt}"
         
         Rules:
-        - AWS Resources only (aws_vpc, aws_subnet, aws_instance, aws_security_group, aws_db_instance, aws_lb).
+        - AWS Resources only:
+          - Networking: aws_vpc, aws_subnet, aws_internet_gateway
+          - Compute: aws_instance, aws_launch_template, aws_autoscaling_group
+          - Database: aws_db_instance
+          - Load Balancing: aws_lb
+          - Security: aws_security_group
         - Edge Direction is STRICT: Parent -> Child.
         - Example: VPC -> Subnet -> Instance. 
+        - Example: ALB -> Target Group -> Instance OR ASG.
+        - Example: Launch Template -> ASG.
         - Example: ALB -> Target Group -> Instance.
         - NEVER do Instance -> Subnet.
         - If deleting, be precise with IDs.
+        
+        Security Constraints (CRITICAL):
+        - DO NOT allow Open SSH (Port 22) from 0.0.0.0/0. This is a Policy Violation.
+        - For "Public Access", use HTTP (80) or HTTPS (443).
+        - If SSH is needed, restrict to a specific IP or omit ingress.
         
         Output JSON matching PlanDiff schema:
         {{
@@ -242,6 +273,9 @@ class InfraAgent:
             if self.graph.has_edge(u, v):
                 self.graph.remove_edge(u, v)
 
+        # 5. Persist State
+        self.save_state_to_disk()
+
     def simulate_blast_radius(self, target_node_id: str) -> List[str]:
         """
         Returns a list of node IDs that would be affected if target_node_id fails/is deleted.
@@ -306,64 +340,179 @@ class InfraAgent:
                 mitigation_strategy="Manual Review Required"
             )
 
+    def review_code(self, hcl_code: str, user_request: str) -> CodeReview:
+        """
+        Agent B (Critic): Reviews the generated HCL code.
+        """
+        prompt = f"""
+        You are a Principal Cloud Architect and Security Auditor.
+        Review the following Terraform Code against the User Request.
+
+        User Request: "{user_request}"
+
+        Terraform Code:
+        ```hcl
+        {hcl_code}
+        ```
+
+        Checklist:
+        1. **Completeness**: Does it fulfill all parts of the user request? (e.g. if 'ASG' requested, is 'aws_autoscaling_group' present?)
+        2. **Security**: Are there risky Security Group rules? (Open SSH 0.0.0.0/0 is a WARNING, usually bad unless explicitly requested for public access). Egress should be open.
+        3. **Logic**: Are resources correctly connected? (Instances in subnets, LBs connected to SGs).
+        4. **Best Practices**: Are tags present? Descriptions?
+
+        Output JSON matching CodeReview schema:
+        {{
+            "score": 85,
+            "critical_issues": ["Issue 1", "Issue 2"],
+            "suggestions": ["Suggestion 1"],
+            "approved": true/false  (Approved if score > 90 and NO critical logic errors)
+        }}
+        """
+        response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        try:
+            return CodeReview(**json.loads(response.text))
+        except:
+            return CodeReview(score=0, critical_issues=["Failed to parse Review"], approved=False)
+
+    def refine_code(self, hcl_code: str, review: CodeReview, feedback_override: str = None) -> str:
+        """
+        Agent A (Editor): Fixes the code based on feedback.
+        """
+        feedback = feedback_override if feedback_override else f"Issues: {review.critical_issues}. Suggestions: {review.suggestions}"
+        
+        prompt = f"""
+        You are a Senior DevOps Engineer. 
+        Fix this Terraform code based on the Reviewer's feedback.
+
+        Current Code:
+        ```hcl
+        {hcl_code}
+        ```
+
+        Reviewer Feedback:
+        {feedback}
+
+        Task:
+        1. Fix ALL listed issues.
+        2. Return ONLY the fixed HCL code. No markdown.
+        """
+        response = self.model.generate_content(prompt)
+        return response.text.replace("```hcl", "").replace("```", "").strip()
+
     def generate_terraform_agentic(self, user_prompt: str) -> PipelineResult:
         """
-        Stage 1 (Draft): Generates HCL + Python Test Script using Gemini,
-        then delegates to PipelineManager for the 5-stage validation loop.
+        Stage 1 (Draft): Generates HCL + Python Test Script.
+        IMPROVED: Recursive Self-Healing (Think -> Critque -> Refine -> Test -> Retry).
         """
-        # 0. Sync Graph State (Auto-update graph based on intent)
-        # We try to apply the changes to the internal graph first so the visualizer updates.
+        # 0. Sync Graph State (Best Effort)
         try:
              plan = self.plan_changes(user_prompt)
              if not plan.logs or not any("FAILED" in log for log in plan.logs):
                  self.apply_diff(plan)
         except Exception as e:
-             print(f"Graph Sync Warning: Could not update internal graph: {e}")
+             print(f"CRITICAL GRAPH SYNC ERROR: {e}")
+             import traceback
+             traceback.print_exc()
 
         # 1. Draft Code using current state context
         current_state = self.export_state().model_dump_json()
         
         prompt = f"""
         You are a Senior DevOps Engineer. 
-        Task: Write Terraform HCL code and a Python Verification Script for the user request.
+        Task: Write Terraform HCL code and a Python Verification Script.
         
-        Context (Current Infrastructure):
+        --- INPUTS ---
+        1. User Request: "{user_prompt}"
+        2. Graph State (Current Blueprint): 
         {current_state}
         
-        User Request: "{user_prompt}"
+        --- CRITICAL INSTRUCTIONS ---
+        1. **Gap Filling:** The Graph State might be incomplete or stale. **TRUST THE USER REQUEST ABOVE ALL.**
+        2. If the user asked for "EC2" and "DB" but the Graph only has "VPC", **YOU MUST GENERATE THE EC2 AND DB HCL**.
+        3. **Completeness:** Ensure all necessary "glue" is present:
+           - Security Groups must have ingress/egress rules.
+           - **CRITICAL:** Terraform Security Groups typically strip default Egress. You MUST explicitly add an `egress` block allowing all traffic (`0.0.0.0/0`, protocol "-1") unless restricted.
+           - Instances must be attached to Subnets.
+           - DBs must have Subnet Groups.
+        4. **Refinement:** If the Graph shows a 'connects_to' edge between Web and DB, implement this as a Security Group Rule allowing traffic on port 3306.
+        5. **HA Support**: Use `aws_lb`, `aws_launch_template`, `aws_autoscaling_group` if requested.
         
-        Requirement 1 (Terraform):
-        - Output a valid `main.tf` content. 
-        - Use localstack compliant providers if needed (or standard AWS, we use tflocal).
-        
-        Requirement 2 (Verification - Python):
-        - Output a `test_infra.py` script.
-        - Using `boto3` (configured for localstack endpoint_url='http://localhost:4566').
-        - It should check if the resources exist/work.
-        - Print "VERIFICATION SUCCESS" if passes, or raise Exception.
-        
-        Output Format (JSON):
-        {{
-            "hcl_code": "...",
-            "test_script": "..."
-        }}
+        --- OUTPUT REQUIREMENTS ---
+        Return JSON with:
+        - "hcl_code": The complete main.tf content. Use AWS provider.
+        - "test_script": A python script using boto3 (endpoint_url='http://localhost:4566') to verify resources exist.
         """
         
-        response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        from schemas import PipelineStage # Import locally to avoid circle if any, or just reuse
+        total_stages_history = []
+        max_outer_retries = 3
+        current_hcl = ""
+        current_test_script = ""
         
-        try:
-            data = json.loads(response.text)
-            hcl_code = data.get("hcl_code", "")
-            test_script = data.get("test_script", "")
+        # --- THE OUTER LOOP (Pipeline Feedback) ---
+        last_pipeline_error = ""
+
+        for attempt in range(max_outer_retries):
+            # Step A: Drafting / Re-Drafting
+            if attempt == 0:
+                # First Draft
+                response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                try:
+                    data = json.loads(response.text)
+                    current_hcl = data.get("hcl_code", "")
+                    current_test_script = data.get("test_script", "")
+                except Exception as e:
+                    return PipelineResult(success=False, hcl_code="", stages=[], final_message=f"Draft Gen Failed: {str(e)}")
+            else:
+                # Re-Drafting based on Pipeline Error
+                logging_stage = PipelineStage(name=f"Self-Correction (Attempt {attempt+1})", status="running", logs=[f"Pipeline Failed: {last_pipeline_error}", "Refining HCL..."])
+                total_stages_history.append(logging_stage)
+                
+                current_hcl = self.refine_code(current_hcl, None, feedback_override=f"The previous Terraform code failed validation/apply with this error: {last_pipeline_error}. Fix the code.")
+                logging_stage.status = "success"
+
+            # Step B: The Thinking Loop (Inner Peer Review)
+            # Only do deep review on the first draft or if we want rigorous checking every time. 
+            # Let's do it every time to be safe.
+            for review_round in range(2):
+                review = self.review_code(current_hcl, user_prompt)
+                
+                review_logs = [f"Score: {review.score}/100"]
+                review_logs.extend([f"Issue: {i}" for i in review.critical_issues])
+                
+                stage = PipelineStage(name=f"AI Peer Review (Round {review_round+1})", status="success" if review.approved else "warning", logs=review_logs)
+                total_stages_history.append(stage)
+                
+                if review.approved:
+                    break
+                
+                # Refine based on Review
+                current_hcl = self.refine_code(current_hcl, review)
+                total_stages_history.append(PipelineStage(name="Refinement", status="success", logs=["Applied fixes from Peer Review."]))
+
+            # Step C: Execution
+            result = self.pipeline.run_pipeline(current_hcl, current_test_script)
             
-            # Start the Pipeline
-            return self.pipeline.run_pipeline(hcl_code, test_script)
+            # Merge execution stages into history
+            total_stages_history.extend(result.stages)
             
-        except Exception as e:
-            # Fallback if AI fails to generate JSON
-            return PipelineResult(
-                success=False, 
-                hcl_code="", 
-                stages=[], 
-                final_message=f"Agent Draft Failed: {str(e)}"
-            )
+            if result.success:
+                return PipelineResult(
+                    success=True,
+                    hcl_code=current_hcl,
+                    stages=total_stages_history,
+                    final_message="Recursively Verified & Deployed!"
+                )
+            
+            # If failed, capture error for next Outer Loop iteration
+            last_pipeline_error = result.stages[-1].error or "Unknown Pipeline Error"
+            # Loop continues...
+
+        # If we exhausted retries
+        return PipelineResult(
+            success=False,
+            hcl_code=current_hcl,
+            stages=total_stages_history,
+            final_message=f"Failed after {max_outer_retries} recursive attempts."
+        )

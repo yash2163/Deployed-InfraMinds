@@ -1,135 +1,113 @@
 import boto3
 import os
-import time
 
 # --- Configuration ---
-LOCALSTACK_ENDPOINT = os.environ.get("AWS_ENDPOINT_URL", 'http://localhost:4566')
-AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", 'us-east-1')
-VPC_CIDR = '10.0.0.0/16'
-PUBLIC_SUBNET_CIDR = '10.0.1.0/24'
-PRIVATE_SUBNET_CIDR = '10.0.2.0/24'
-INSTANCE_TAG_NAME = 'web-instance'
-DB_IDENTIFIER = 'db-private'
-WEB_SG_NAME = 'sg-web'
-DB_SG_NAME = 'sg-db'
+LOCALSTACK_ENDPOINT = os.environ.get("LOCALSTACK_ENDPOINT", 'http://localhost:4566')
+AWS_REGION = 'us-east-1'
 
-def get_boto_client(service_name):
-    """Initializes and returns a boto3 client for LocalStack."""
-    return boto3.client(
-        service_name,
-        endpoint_url=LOCALSTACK_ENDPOINT,
-        region_name=AWS_REGION,
-        aws_access_key_id='test',
-        aws_secret_access_key='test'
-    )
+# --- Boto3 Clients ---
+# Use dummy credentials for localstack
+os.environ['AWS_ACCESS_KEY_ID'] = 'test'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'test'
 
-def verify_infra():
-    """Runs all verification checks."""
-    print("--- Starting Infrastructure Verification ---")
-    ec2 = get_boto_client('ec2')
-    rds = get_boto_client('rds')
+boto_config = {
+    'region_name': AWS_REGION,
+    'endpoint_url': LOCALSTACK_ENDPOINT,
+}
 
-    # 1. Verify VPC and Subnets
-    print("Verifying VPC and Subnets...")
-    vpcs = ec2.describe_vpcs(Filters=[{'Name': 'cidr-block', 'Values': [VPC_CIDR]}])['Vpcs']
-    if not vpcs: raise Exception(f"VPC with CIDR {VPC_CIDR} not found.")
-    vpc_id = vpcs[0]['VpcId']
-    print(f"  [PASS] Found VPC {vpc_id}")
+ec2_client = boto3.client('ec2', **boto_config)
+rds_client = boto3.client('rds', **boto_config)
 
-    subnets = ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['Subnets']
-    public_subnet = next((s for s in subnets if s['CidrBlock'] == PUBLIC_SUBNET_CIDR), None)
-    private_subnet = next((s for s in subnets if s['CidrBlock'] == PRIVATE_SUBNET_CIDR), None)
-    if not public_subnet: raise Exception(f"Public subnet {PUBLIC_SUBNET_CIDR} not found.")
-    if not private_subnet: raise Exception(f"Private subnet {PRIVATE_SUBNET_CIDR} not found.")
-    public_subnet_id = public_subnet['SubnetId']
-    print(f"  [PASS] Found Public Subnet {public_subnet_id}")
-    print(f"  [PASS] Found Private Subnet {private_subnet['SubnetId']}")
-
-    # 2. Verify Security Groups and Rules
-    print("Verifying Security Groups...")
-    sgs = ec2.describe_security_groups(
+def get_instance_by_tag(tag_value):
+    """Finds a running instance by its Name tag."""
+    response = ec2_client.describe_instances(
         Filters=[
-            {'Name': 'vpc-id', 'Values': [vpc_id]},
-            {'Name': 'group-name', 'Values': [WEB_SG_NAME, DB_SG_NAME]}
+            {'Name': 'tag:Name', 'Values': [tag_value]},
+            {'Name': 'instance-state-name', 'Values': ['running']}
         ]
-    )['SecurityGroups']
-    web_sg = next((sg for sg in sgs if sg['GroupName'] == WEB_SG_NAME), None)
-    db_sg = next((sg for sg in sgs if sg['GroupName'] == DB_SG_NAME), None)
+    )
+    instances = [instance for reservation in response['Reservations'] for instance in reservation['Instances']]
+    return instances[0] if instances else None
 
-    if not web_sg: raise Exception(f"Security group '{WEB_SG_NAME}' not found.")
-    if not db_sg: raise Exception(f"Security group '{DB_SG_NAME}' not found.")
-    web_sg_id = web_sg['GroupId']
-    print(f"  [PASS] Found Web SG: {web_sg_id}")
-    print(f"  [PASS] Found DB SG: {db_sg['GroupId']}")
+def get_resource_by_tag(client, describe_call, response_key, tag_key, tag_value):
+    """Generic function to find a resource by a specific tag."""
+    paginator = client.get_paginator(describe_call)
+    pages = paginator.paginate(Filters=[{'Name': f'tag:{tag_key}', 'Values': [tag_value]}])
+    resources = [resource for page in pages for resource in page[response_key]]
+    return resources[0] if resources else None
 
-    # Check Web SG rules
-    ssh_rule = any(p['FromPort'] == 22 and p['ToPort'] == 22 and any(ip['CidrIp'] == '0.0.0.0/0' for ip in p['IpRanges']) for p in web_sg['IpPermissions'])
-    http_rule = any(p['FromPort'] == 80 and p['ToPort'] == 80 and any(ip['CidrIp'] == '0.0.0.0/0' for ip in p['IpRanges']) for p in web_sg['IpPermissions'])
-    if not ssh_rule: raise Exception(f"Web SG missing inbound SSH rule from 0.0.0.0/0.")
-    if not http_rule: raise Exception(f"Web SG missing inbound HTTP rule from 0.0.0.0/0.")
-    print("  [PASS] Web SG has correct inbound SSH and HTTP rules.")
+def verify_infrastructure():
+    """
+    Main function to run all verification checks.
+    Raises an Exception if any check fails.
+    """
+    print("--- Starting Infrastructure Verification ---")
 
-    # Check DB SG rules
-    db_rule = any(p['FromPort'] == 5432 and p['ToPort'] == 5432 and any(ug['GroupId'] == web_sg_id for ug in p['UserIdGroupPairs']) for p in db_sg['IpPermissions'])
-    if not db_rule: raise Exception(f"DB SG does not allow port 5432 from Web SG ({web_sg_id}).")
-    print("  [PASS] DB SG has correct inbound PostgreSQL rule from Web SG.")
+    # 1. Verify VPC
+    vpc = get_resource_by_tag(ec2_client, 'describe_vpcs', 'Vpcs', 'Name', 'vpc-main')
+    assert vpc, "VPC with Name tag 'vpc-main' not found."
+    assert vpc['CidrBlock'] == '10.0.0.0/16', f"VPC CIDR is not '10.0.0.0/16', got {vpc['CidrBlock']}"
+    vpc_id = vpc['VpcId']
+    print("✅ VPC 'vpc-main' exists with correct CIDR.")
 
-    # 3. Verify EC2 Instance
-    print("Verifying EC2 Instance...")
-    reservations = ec2.describe_instances(Filters=[{'Name': 'tag:Name', 'Values': [INSTANCE_TAG_NAME]}])['Reservations']
-    if not reservations or not reservations[0]['Instances']:
-        raise Exception(f"EC2 instance with tag Name={INSTANCE_TAG_NAME} not found.")
-    instance = reservations[0]['Instances'][0]
+    # 2. Verify Subnets
+    public_subnet = get_resource_by_tag(ec2_client, 'describe_subnets', 'Subnets', 'Name', 'subnet-public')
+    assert public_subnet, "Subnet with Name tag 'subnet-public' not found."
+    assert public_subnet['CidrBlock'] == '10.0.1.0/24', "Public Subnet CIDR is incorrect"
+    assert public_subnet['VpcId'] == vpc_id, "Public Subnet is not in the correct VPC"
+    public_subnet_id = public_subnet['SubnetId']
+    print("✅ Subnet 'subnet-public' exists with correct CIDR.")
+
+    private_subnet = get_resource_by_tag(ec2_client, 'describe_subnets', 'Subnets', 'Name', 'subnet-private')
+    assert private_subnet, "Subnet with Name tag 'subnet-private' not found."
+    assert private_subnet['CidrBlock'] == '10.0.2.0/24', "Private Subnet CIDR is incorrect"
+    assert private_subnet['VpcId'] == vpc_id, "Private Subnet is not in the correct VPC"
+    print("✅ Subnet 'subnet-private' exists with correct CIDR.")
+
+    # 3. Verify Security Groups
+    sg_web_response = ec2_client.describe_security_groups(Filters=[{'Name': 'group-name', 'Values': ['sg-web']}])
+    assert len(sg_web_response['SecurityGroups']) == 1, "Security Group 'sg-web' not found"
+    sg_web = sg_web_response['SecurityGroups'][0]
+    sg_web_id = sg_web['GroupId']
     
-    if instance['State']['Name'] != 'running':
-        raise Exception(f"Instance is not running. Current state: {instance['State']['Name']}.")
-    print(f"  [PASS] Instance '{instance['InstanceId']}' is running.")
+    http_rule = any(p['FromPort'] == 80 and any(r.get('CidrIp') == '0.0.0.0/0' for r in p.get('IpRanges', [])) for p in sg_web.get('IpPermissions', []))
+    assert http_rule, "Web SG does not have an ingress rule for HTTP (port 80) from 0.0.0.0/0"
+    print("✅ Security Group 'sg-web' exists with correct HTTP rule.")
     
-    if instance['SubnetId'] != public_subnet_id:
-        raise Exception(f"Instance is in wrong subnet {instance['SubnetId']}. Expected {public_subnet_id}.")
-    print("  [PASS] Instance is in the correct public subnet.")
-
-    if 'PublicIpAddress' not in instance:
-        raise Exception("Instance does not have a public IP address.")
-    print(f"  [PASS] Instance has a public IP: {instance['PublicIpAddress']}")
+    sg_db_response = ec2_client.describe_security_groups(Filters=[{'Name': 'group-name', 'Values': ['sg-db']}])
+    assert len(sg_db_response['SecurityGroups']) == 1, "Security Group 'sg-db' not found"
+    sg_db = sg_db_response['SecurityGroups'][0]
     
-    instance_sg_ids = {sg['GroupId'] for sg in instance['SecurityGroups']}
-    if web_sg_id not in instance_sg_ids:
-        raise Exception(f"Instance is not in the correct security group. Missing {web_sg_id}.")
-    print("  [PASS] Instance is associated with the correct web security group.")
+    db_rule = any(p['FromPort'] == 3306 and any(g.get('GroupId') == sg_web_id for g in p.get('UserIdGroupPairs', [])) for p in sg_db.get('IpPermissions', []))
+    assert db_rule, f"DB SG does not allow MySQL traffic (3306) from Web SG '{sg_web_id}'"
+    print("✅ Security Group 'sg-db' exists and allows traffic from 'sg-web'.")
 
-    # 4. Verify RDS Instance
-    print("Verifying RDS Instance...")
-    try:
-        db_instances = rds.describe_db_instances(DBInstanceIdentifier=DB_IDENTIFIER)['DBInstances']
-        if not db_instances:
-             raise Exception(f"RDS instance with identifier '{DB_IDENTIFIER}' not found.")
-        db_instance = db_instances[0]
-    except rds.exceptions.DBInstanceNotFoundFault:
-        raise Exception(f"RDS instance with identifier '{DB_IDENTIFIER}' not found.")
+    # 4. Verify EC2 Instance
+    instance = get_instance_by_tag('instance-web')
+    assert instance, "EC2 instance with Name tag 'instance-web' not found or not running."
+    assert 'PublicIpAddress' in instance, "Instance does not have a public IP address"
+    assert instance['SubnetId'] == public_subnet_id, "Instance is not in the public subnet"
+    instance_sg_ids = [sg['GroupId'] for sg in instance['SecurityGroups']]
+    assert sg_web_id in instance_sg_ids, "Instance is not associated with the 'sg-web' security group"
+    print("✅ EC2 Instance 'instance-web' is running in the public subnet with a public IP.")
 
-    if db_instance['DBInstanceStatus'] != 'available':
-        raise Exception(f"RDS instance is not available. Current status: {db_instance['DBInstanceStatus']}.")
-    print(f"  [PASS] RDS instance '{db_instance['DBInstanceIdentifier']}' is available.")
-    
-    if db_instance['PubliclyAccessible']:
-        raise Exception("RDS instance is publicly accessible, but should be private.")
-    print("  [PASS] RDS instance is correctly configured as private.")
+    # 5. Verify RDS Instance
+    db_instances = rds_client.describe_db_instances(DBInstanceIdentifier='db-private')['DBInstances']
+    assert len(db_instances) == 1, "Expected 1 RDS instance with identifier 'db-private'"
+    db_instance = db_instances[0]
+    assert db_instance['DBInstanceStatus'] == 'available', f"RDS instance is not available, status is {db_instance['DBInstanceStatus']}"
+    assert db_instance['Engine'] == 'mysql', "RDS engine is not mysql"
+    assert not db_instance['PubliclyAccessible'], "RDS instance is publicly accessible, but should be private"
+    print("✅ RDS Instance 'db-private' is available and configured as private.")
 
-    db_instance_sg_ids = {sg['VpcSecurityGroupId'] for sg in db_instance['VpcSecurityGroups']}
-    if db_sg['GroupId'] not in db_instance_sg_ids:
-        raise Exception(f"RDS instance is not in the correct security group. Missing {db_sg['GroupId']}.")
-    print("  [PASS] RDS instance is associated with the correct DB security group.")
-
-    print("\n--- All checks passed ---")
+    print("\n--- All checks passed! ---")
 
 
 if __name__ == "__main__":
     try:
-        # Allow some time for resources to become fully available in LocalStack
-        time.sleep(10)
-        verify_infra()
-        print("\nVERIFICATION SUCCESS")
+        verify_infrastructure()
+        print("VERIFICATION SUCCESS")
     except Exception as e:
         print(f"\nVERIFICATION FAILED: {e}")
-        exit(1)
+        # Re-raising allows CI/CD systems to catch the failure exit code
+        raise

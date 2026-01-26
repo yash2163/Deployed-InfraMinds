@@ -123,7 +123,87 @@ resource "aws_subnet" "{mock_subnet_id}" {{
                 props = self.graph.nodes[db_id].get("properties", {})
                 hcl_blocks.append(self._gen_db(db_id, props, subnet_group_name))
 
+                hcl_blocks.append(self._gen_db(db_id, props, subnet_group_name))
+
+        # 4. Handle Unsupported Resources (ALB/ASG)
+        for node_id, node in self.graph.nodes(data=True):
+             res_type = node.get("type", "unknown")
+             props = node.get("properties", {})
+             if res_type == "aws_lb":
+                 hcl_blocks.append(self._gen_alb(node_id, props, public_subnets))
+             elif res_type == "aws_launch_template":
+                 hcl_blocks.append(self._gen_launch_template(node_id, props))
+             elif res_type == "aws_autoscaling_group":
+                 hcl_blocks.append(self._gen_asg(node_id, props, private_subnets))
+
         return {"main.tf": "\n\n".join(hcl_blocks)}
+
+    def _gen_alb(self, node_id: str, props: Dict[str, Any], subnets: List[str]) -> str:
+        sg_refs = self._find_connected_sgs(node_id)
+        sg_block = f"security_groups = [{', '.join(sg_refs)}]" if sg_refs else ""
+        
+        subnet_refs = [f"aws_subnet.{s}.id" for s in subnets]
+        subnet_block = f"subnets = [{', '.join(subnet_refs)}]"
+        
+        return f"""resource "aws_lb" "{node_id}" {{
+  name               = "{node_id}"
+  internal           = false
+  load_balancer_type = "application"
+  {sg_block}
+  {subnet_block}
+  tags = {{ Name = "{node_id}" }}
+}}"""
+
+    def _gen_launch_template(self, node_id: str, props: Dict[str, Any]) -> str:
+        ami = props.get("ami", "ami-0c55b159cbfafe1f0")
+        instance_type = props.get("instance_type", "t2.micro")
+        sg_refs = self._find_connected_sgs(node_id)
+        
+        return f"""resource "aws_launch_template" "{node_id}" {{
+  name_prefix   = "{node_id}"
+  image_id      = "{ami}"
+  instance_type = "{instance_type}"
+  
+  vpc_security_group_ids = [{', '.join(sg_refs)}]
+  
+  tag_specifications {{
+    resource_type = "instance"
+    tags = {{ Name = "{node_id}-instance" }}
+  }}
+}}"""
+
+    def _gen_asg(self, node_id: str, props: Dict[str, Any], subnets: List[str]) -> str:
+        # Find attached Launch Template (Parent)
+        lt_ref = self._get_parent_id(node_id, "aws_launch_template")
+        if not lt_ref:
+             # Fallback: Look for ANY LT in graph if strict parent relationship missing
+             lts = [n for n in self.graph.nodes if self.graph.nodes[n].get("type") == "aws_launch_template"]
+             if lts: lt_ref = f"aws_launch_template.{lts[0]}.id"
+             else: lt_ref = '"unknown-lt"'
+
+        min_size = props.get("min_size", 1)
+        max_size = props.get("max_size", 3)
+        
+        subnet_refs = [f"aws_subnet.{s}.id" for s in subnets]
+        vpc_zone_id = f"vpc_zone_identifier = [{', '.join(subnet_refs)}]"
+        
+        return f"""resource "aws_autoscaling_group" "{node_id}" {{
+  desired_capacity    = {min_size}
+  max_size            = {max_size}
+  min_size            = {min_size}
+  {vpc_zone_id}
+  
+  launch_template {{
+    id      = {lt_ref}
+    version = "$Latest"
+  }}
+  
+  tag {{
+    key                 = "Name"
+    value               = "{node_id}-asg"
+    propagate_at_launch = true
+  }}
+}}"""
 
     def _find_global_vpc(self) -> str:
         """Finds a VPC node to use as default context."""

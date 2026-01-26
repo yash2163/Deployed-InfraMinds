@@ -13,15 +13,16 @@ SIMULATION_MODE = True
 from schemas import PipelineResult, PipelineStage
 
 # Configuration for Simulation Mode
-# If True, bypasses real CLI calls and uses mocked responses/errors
+# If True, bypassed real CLI calls and uses mocked responses/errors
 # Set to False to run actual 'terraform' and 'localstack' commands
 SIMULATION_MODE = True
 
 
 class PipelineManager:
-    def __init__(self, agent_model, work_dir: str = "./terraform_workspace"):
+    def __init__(self, agent_model, work_dir: str = "/tmp/infra_minds_workspace"):
         self.agent_model = agent_model
-        self.work_dir = work_dir
+        # Use absolute path in /tmp to avoid triggering uvicorn reload
+        self.work_dir = os.path.abspath(work_dir)
         
         if not os.path.exists(self.work_dir):
             os.makedirs(self.work_dir)

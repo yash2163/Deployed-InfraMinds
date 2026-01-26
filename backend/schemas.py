@@ -38,6 +38,12 @@ class BlastAnalysis(BaseModel):
     explanation: str = Field(..., description="Detailed AI explanation of why these nodes are affected")
     mitigation_strategy: str = Field(..., description="How to safely handle this deletion")
 
+class CodeReview(BaseModel):
+    score: int = Field(..., description="Quality score 0-100")
+    critical_issues: List[str] = Field(default_factory=list, description="List of blocking issues (Security, Logic)")
+    suggestions: List[str] = Field(default_factory=list, description="Suggestions for improvement")
+    approved: bool = Field(..., description="Whether the code is ready for deployment")
+
 class PipelineStage(BaseModel):
     name: str 
     status: str 

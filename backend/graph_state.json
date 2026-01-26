@@ -1,0 +1,188 @@
+{
+  "resources": [
+    {
+      "id": "aws_vpc_1",
+      "type": "aws_vpc",
+      "properties": {
+        "cidr_block": "10.0.0.0/16",
+        "enable_dns_hostnames": true,
+        "enable_dns_support": true,
+        "tags": {
+          "Name": "main-vpc"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_internet_gateway_1",
+      "type": "aws_internet_gateway",
+      "properties": {
+        "vpc_id": "aws_vpc_1",
+        "tags": {
+          "Name": "main-igw"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "public_subnet_1",
+      "type": "aws_subnet",
+      "properties": {
+        "vpc_id": "aws_vpc_1",
+        "cidr_block": "10.0.1.0/24",
+        "availability_zone": "us-east-1a",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "public-subnet"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "private_subnet_1",
+      "type": "aws_subnet",
+      "properties": {
+        "vpc_id": "aws_vpc_1",
+        "cidr_block": "10.0.2.0/24",
+        "availability_zone": "us-east-1b",
+        "tags": {
+          "Name": "private-subnet"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "web_sg_1",
+      "type": "aws_security_group",
+      "properties": {
+        "name": "web-access-sg",
+        "description": "Allow HTTP inbound traffic for public EC2",
+        "vpc_id": "aws_vpc_1",
+        "ingress": [
+          {
+            "description": "HTTP from anywhere",
+            "from_port": 80,
+            "to_port": 80,
+            "protocol": "tcp",
+            "cidr_blocks": [
+              "0.0.0.0/0"
+            ]
+          }
+        ],
+        "egress": [
+          {
+            "from_port": 0,
+            "to_port": 0,
+            "protocol": "-1",
+            "cidr_blocks": [
+              "0.0.0.0/0"
+            ]
+          }
+        ]
+      },
+      "status": "planned"
+    },
+    {
+      "id": "db_sg_1",
+      "type": "aws_security_group",
+      "properties": {
+        "name": "db-access-sg",
+        "description": "Allow inbound from web security group",
+        "vpc_id": "aws_vpc_1",
+        "ingress": [
+          {
+            "description": "Database access from Web SG",
+            "from_port": 3306,
+            "to_port": 3306,
+            "protocol": "tcp",
+            "security_groups": [
+              "web_sg_1"
+            ]
+          }
+        ]
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_instance_1",
+      "type": "aws_instance",
+      "properties": {
+        "ami": "ami-0c55b159cbfafe1f0",
+        "instance_type": "t2.micro",
+        "subnet_id": "public_subnet_1",
+        "vpc_security_group_ids": [
+          "web_sg_1"
+        ],
+        "tags": {
+          "Name": "web-server"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_db_instance_1",
+      "type": "aws_db_instance",
+      "properties": {
+        "engine": "mysql",
+        "instance_class": "db.t2.micro",
+        "allocated_storage": 20,
+        "db_name": "mydatabase",
+        "username": "admin",
+        "password": "please_change_this_password",
+        "vpc_security_group_ids": [
+          "db_sg_1"
+        ],
+        "skip_final_snapshot": true,
+        "publicly_accessible": false
+      },
+      "status": "planned"
+    }
+  ],
+  "edges": [
+    {
+      "source": "aws_vpc_1",
+      "target": "aws_internet_gateway_1",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_vpc_1",
+      "target": "public_subnet_1",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_vpc_1",
+      "target": "private_subnet_1",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_vpc_1",
+      "target": "web_sg_1",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_vpc_1",
+      "target": "db_sg_1",
+      "relation": "contains"
+    },
+    {
+      "source": "public_subnet_1",
+      "target": "aws_instance_1",
+      "relation": "contains"
+    },
+    {
+      "source": "private_subnet_1",
+      "target": "aws_db_instance_1",
+      "relation": "contains"
+    },
+    {
+      "source": "web_sg_1",
+      "target": "aws_instance_1",
+      "relation": "attaches"
+    },
+    {
+      "source": "db_sg_1",
+      "target": "aws_db_instance_1",
+      "relation": "attaches"
+    }
+  ]
+}
