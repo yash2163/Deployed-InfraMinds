@@ -10,6 +10,9 @@ export default function Home() {
   const [response, setResponse] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<string[]>([]);
+  const [deploymentPhase, setDeploymentPhase] = useState<'idle' | 'graph_pending' | 'code_pending' | 'deploying'>('idle');
+  const [showCode, setShowCode] = useState(false);
+  const [tfCode, setTfCode] = useState("");
 
   /* New Helper for Reset */
   const handleReset = async () => {
@@ -61,66 +64,117 @@ export default function Home() {
     }
   };
 
-  /* Agentic Deployment Handler */
+  /* Two-Stage Confirmation Deployment Handler */
   const handleExecute = async () => {
     if (!input.trim()) return;
+
+    const userInput = input.trim();
+
+    // Check if user is confirming
+    if (userInput.toUpperCase() === "CONFIRM") {
+      if (deploymentPhase === 'idle') {
+        setResponse({
+          summary: "No pending confirmation",
+          risks: ["Please start with a deployment request first"],
+          explanation: ""
+        });
+        return;
+      }
+
+      // User is confirming - proceed with next phase
+      setLoading(true);
+      setExecutionLogs([`Confirming phase: ${deploymentPhase}...`]);
+
+      try {
+        const pipelineResult = await import('../lib/api').then(m => m.deployAgentic("CONFIRM"));
+
+        if (pipelineResult.session_phase === 'code_pending') {
+          // Phase 2: Code generated and validated
+          setTfCode(pipelineResult.hcl_code);
+          setDeploymentPhase('code_pending');
+
+          const logs: string[] = [];
+          pipelineResult.stages?.forEach((stage: any) => {
+            const symbol = stage.status === 'success' ? '✅' : '⚠️';
+            logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
+            stage.logs?.forEach((l: string) => logs.push(`   > ${l}`));
+          });
+          logs.push(pipelineResult.final_message);
+          setExecutionLogs(logs);
+
+          setResponse({
+            summary: "Terraform Code Generated",
+            explanation: "Code has been validated. Review it using 'View Code' button.",
+            mitigation: "Type CONFIRM to deploy to LocalStack for testing"
+          });
+        } else if (pipelineResult.success) {
+          // Phase 3: Deployment complete
+          setDeploymentPhase('idle');
+          setTfCode(pipelineResult.hcl_code);
+
+          const logs: string[] = [];
+          pipelineResult.stages?.forEach((stage: any) => {
+            const symbol = stage.status === 'success' ? '✅' : (stage.status === 'warning' ? '⚠️' : '❌');
+            logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
+            stage.logs?.forEach((l: string) => logs.push(`   > ${l}`));
+          });
+          logs.push(`🎉 ${pipelineResult.final_message}`);
+          setExecutionLogs(logs);
+
+          setResponse({
+            summary: "Deployment Complete!",
+            explanation: pipelineResult.final_message
+          });
+          setInput(''); // Clear input
+        } else {
+          // Deployment failed
+          const logs: string[] = ["❌ Deployment Failed"];
+          pipelineResult.stages?.forEach((stage: any) => {
+            logs.push(`[${stage.name}]: ${stage.status}`);
+            stage.logs?.forEach((l: string) => logs.push(`   > ${l}`));
+          });
+          setExecutionLogs(logs);
+          setDeploymentPhase('idle');
+        }
+      } catch (e) {
+        console.error(e);
+        setExecutionLogs(["❌ Error processing confirmation"]);
+        setDeploymentPhase('idle');
+      } finally {
+        setLoading(false);
+      }
+
+      return;
+    }
+
+    // Phase 1: Generate graph plan
     setLoading(true);
     setResponse(null);
-    setExecutionLogs(["Initializing Agentic Pipeline..."]);
+    setExecutionLogs(["Generating infrastructure plan..."]);
 
     try {
-      // 1. Trigger the Self-Healing Loop on Backend
-      const pipelineResult = await import('../lib/api').then(m => m.deployAgentic(input));
+      const planResult = await import('../lib/api').then(m => m.planGraph(userInput));
 
-      console.log("Pipeline Result:", pipelineResult);
+      setDeploymentPhase('graph_pending');
+      setExecutionLogs(["✅ Graph plan generated. Review the visualization."]);
 
-      if (pipelineResult.success) {
-        // Success Path
-        const logs: string[] = [];
-
-        pipelineResult.stages.forEach(stage => {
-          const symbol = stage.status === 'success' ? '✅' : (stage.status === 'warning' ? '⚠️' : '❌');
-          logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
-
-          if (stage.logs && stage.logs.length > 0) {
-            stage.logs.forEach(l => {
-              // If it's a detail log, indent it
-              logs.push(`   > ${l}`);
-            });
-          }
-
-          if (stage.error) {
-            logs.push(`   CRITICAL: ${stage.error}`);
-            logs.push(`   >> Triggering Auto-Repair...`);
-          }
-        });
-
-        logs.push(`🎉 ${pipelineResult.final_message}`);
-        setExecutionLogs(logs);
-
-      } else {
-        // Failure Path
-        const logs: string[] = ["❌ Pipeline Failed."];
-        pipelineResult.stages.forEach(stage => {
-          logs.push(`[${stage.name}]: ${stage.status}`);
-          if (stage.logs) {
-            stage.logs.forEach(l => logs.push(`   > ${l}`));
-          }
-          if (stage.error) logs.push(`Error: ${stage.error}`);
-        });
-        setExecutionLogs(logs);
-      }
+      setResponse({
+        summary: planResult.confirmation.message || "Graph Plan Generated",
+        risks: planResult.confirmation.reasons?.map((r: any) => r.reason) || [],
+        explanation: "Review the graph on the left. The infrastructure matches your request.",
+        mitigation: planResult.confirmation.required
+          ? "If this looks correct, type CONFIRM to generate Terraform code."
+          : "Type CONFIRM to proceed with code generation."
+      });
 
     } catch (e) {
       console.error(e);
-      setExecutionLogs(prev => [...prev, "Critical Failure: Backend Unreachable or Timeout."]);
+      setExecutionLogs(["❌ Failed to generate plan"]);
+      setDeploymentPhase('idle');
     } finally {
       setLoading(false);
     }
   };
-
-  const [showCode, setShowCode] = useState(false);
-  const [tfCode, setTfCode] = useState("");
 
   const handleViewCode = async () => {
     try {
@@ -129,10 +183,8 @@ export default function Home() {
         setShowCode(true);
         return;
       }
-      // Fallback to legacy graph export
-      const files = await import('../lib/api').then(m => m.exportTerraform());
-      setTfCode(files["main.tf"] || "No code generated.");
-      setShowCode(true);
+      // No code generated yet
+      alert("No code generated yet. Run the Agent first!");
     } catch (e) {
       alert("Failed to fetch code");
     }
@@ -216,10 +268,14 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={handleExecute}
-                  disabled={loading || !response}
+                  disabled={loading}
                   className="flex-1 flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded py-2 text-sm font-medium transition-colors disabled:opacity-50"
                 >
-                  <Play className="w-3 h-3" /> Commit Changes
+                  <Play className="w-3 h-3" />
+                  {deploymentPhase === 'idle' ? 'Generate Plan' :
+                    deploymentPhase === 'graph_pending' ? 'Confirm Graph' :
+                      deploymentPhase === 'code_pending' ? 'Deploy Code' :
+                        'Deploying...'}
                 </button>
               </div>
             </form>

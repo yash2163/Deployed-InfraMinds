@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = 'http://127.0.0.1:8000';
+const API_URL = 'http://localhost:8000';
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -72,10 +72,12 @@ export const applyPlan = async (diff: any): Promise<any> => {
   return response.data;
 }
 
-export const exportTerraform = async (): Promise<Record<string, string>> => {
-  const response = await api.get('/agent/export');
+export const planGraph = async (prompt: string): Promise<any> => {
+  const response = await api.post('/agent/plan_graph', { prompt });
   return response.data;
 }
+
+
 
 
 export interface PipelineStage {
@@ -90,6 +92,7 @@ export interface PipelineResult {
   hcl_code: string;
   stages: PipelineStage[];
   final_message: string;
+  session_phase?: string;
 }
 
 export const deployAgentic = async (prompt: string): Promise<PipelineResult> => {

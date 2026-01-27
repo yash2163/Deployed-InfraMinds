@@ -4,7 +4,7 @@ import json
 import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import List, Dict
-from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview
+from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview, ConfirmationRequired, ConfirmationReason, SessionState
 
 load_dotenv()
 
@@ -23,6 +23,9 @@ class InfraAgent:
         
         self.model = genai.GenerativeModel('gemini-2.5-pro')
         self.pipeline = PipelineManager(self.model)
+        
+        # Session state for confirmation workflow
+        self.session = SessionState(phase="idle")
 
         if os.path.exists("graph_state.json"):
             try:
@@ -159,11 +162,11 @@ class InfraAgent:
         
         Rules:
         - AWS Resources only:
-          - Networking: aws_vpc, aws_subnet, aws_internet_gateway
+          - Networking: aws_vpc, aws_subnet, aws_internet_gateway, aws_nat_gateway, aws_eip, aws_route_table, aws_route_table_association
           - Compute: aws_instance, aws_launch_template, aws_autoscaling_group
-          - Database: aws_db_instance
-          - Load Balancing: aws_lb
-          - Security: aws_security_group
+          - Database: aws_db_instance, aws_db_subnet_group
+          - Load Balancing: aws_lb, aws_lb_target_group, aws_lb_listener
+          - Security: aws_security_group, aws_security_group_rule
         - Edge Direction is STRICT: Parent -> Child.
         - Example: VPC -> Subnet -> Instance. 
         - Example: ALB -> Target Group -> Instance OR ASG.
@@ -175,7 +178,15 @@ class InfraAgent:
         Security Constraints (CRITICAL):
         - DO NOT allow Open SSH (Port 22) from 0.0.0.0/0. This is a Policy Violation.
         - For "Public Access", use HTTP (80) or HTTPS (443).
+        - For "Public Access", use HTTP (80) or HTTPS (443).
         - If SSH is needed, restrict to a specific IP or omit ingress.
+        
+        Cardinality Rules (CRITICAL):
+        - STRICTLY follow the user's requested quantity.
+        - If user says "an instance" or "a database", generate EXACTLY ONE.
+        - Do NOT assume High Availability (2+ instances) unless explicitly requested.
+        - If user explicitly requests "High Availability", "HA", or "Production", default to Multi-AZ resources (2 subnets per tier, 1 NAT Gateway PER AZ for redundancy).
+        - Do NOT generate duplicate resources with different suffixes (e.g. web_1, web_2) unless asked.
         
         Output JSON matching PlanDiff schema:
         {{
@@ -396,9 +407,101 @@ class InfraAgent:
         Task:
         1. Fix ALL listed issues.
         2. Return ONLY the fixed HCL code. No markdown.
+        3. **FORBIDDEN ACTION**: Do NOT delete a resource to fix an error unless explicitly told to. If a resource causes an error, FIX the configuration, do not remove the resource.
         """
         response = self.model.generate_content(prompt)
         return response.text.replace("```hcl", "").replace("```", "").strip()
+
+    def needs_user_confirmation(self, plan: PlanDiff) -> ConfirmationRequired:
+        """
+        Analyzes the plan to determine if user confirmation is needed.
+        Returns reasons and severity.
+        """
+        reasons = []
+        
+        # Check for cost-incurring resources
+        cost_resources = {
+            "aws_nat_gateway": "NAT Gateway costs ~$32/month",
+            "aws_eip": "Elastic IP may incur charges if not attached",
+            "aws_lb": "Load Balancer costs ~$16/month",
+            "aws_db_instance": "RDS instance costs vary by size"
+        }
+        
+        for res in plan.add_resources:
+            if res.type in cost_resources:
+                reasons.append(ConfirmationReason(
+                    resource=res.id,
+                    type=res.type,
+                    reason=cost_resources[res.type],
+                    severity="medium"
+                ))
+        
+        # Check for deletions
+        if plan.remove_resources:
+            reasons.append(ConfirmationReason(
+                reason=f"Deleting {len(plan.remove_resources)} resource(s) - this is irreversible",
+                severity="high"
+            ))
+        
+        # Generate message
+        if reasons:
+            message = "⚠️ **Graph Plan Generated - Review Required**\n\n"
+            for r in reasons:
+                emoji = "🔴" if r.severity == "high" else "🟡"
+                message += f"{emoji} {r.reason}\n"
+            message += "\nType **CONFIRM** to proceed with code generation, or ask questions about the plan."
+        else:
+            message = "✅ Graph plan looks good. Type **CONFIRM** to generate Terraform code."
+        
+        return ConfirmationRequired(
+            required=len(reasons) > 0,
+            reasons=reasons,
+            message=message
+        )
+
+    def generate_terraform_from_graph(self) -> Dict[str, str]:
+        """
+        Generates Terraform HCL code from the CURRENT graph state.
+        Does NOT re-plan. Uses graph as single source of truth.
+        Returns: {"hcl_code": "...", "test_script": "..."}
+        """
+        current_state = self.export_state().model_dump_json()
+        
+        prompt = f"""
+        You are a Senior DevOps Engineer.
+        Generate complete Terraform HCL code for this infrastructure graph.
+        
+        Graph State (JSON):
+        {current_state}
+        
+        CRITICAL INSTRUCTIONS:
+        1. Generate code for EVERY resource in the graph - do not skip any
+        2. Respect all edges as dependencies/references
+        3. Add egress rules to all security groups (0.0.0.0/0)
+        4. Use AWS-managed passwords for RDS (manage_master_user_password = true) where possible.
+           - If using variables for passwords, ensure sensitive = true.
+        5. **RDS Multi-AZ**: `aws_db_subnet_group` MUST reference subnets in at least TWO different AZs. Create a new private subnet in a different AZ if needed.
+        6. **Web Servers**: If the user asks for a web server (instance or ASG), you MUST include `user_data` to install a web server (e.g. Apache/Nginx) and create an index.html. Without this, the LB health checks will fail.
+        7. **ASG Health Check**: If ASG is attached to a Load Balancer, set `health_check_type = "ELB"` and `health_check_grace_period = 300`.
+        8. Include proper provider configuration for LocalStack
+        
+        Return JSON with:
+        - "hcl_code": Complete main.tf content
+        - "test_script": Python boto3 script to verify resources (endpoint_url='http://localhost:4566')
+        """
+        
+        response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        try:
+            data = json.loads(response.text)
+            return {
+                "hcl_code": data.get("hcl_code", ""),
+                "test_script": data.get("test_script", "")
+            }
+        except Exception as e:
+            return {
+                "hcl_code": f"# Error generating code: {str(e)}",
+                "test_script": "# Error generating test script"
+            }
 
     def generate_terraform_agentic(self, user_prompt: str) -> PipelineResult:
         """
@@ -437,6 +540,12 @@ class InfraAgent:
            - DBs must have Subnet Groups.
         4. **Refinement:** If the Graph shows a 'connects_to' edge between Web and DB, implement this as a Security Group Rule allowing traffic on port 3306.
         5. **HA Support**: Use `aws_lb`, `aws_launch_template`, `aws_autoscaling_group` if requested.
+        6. **Secrets**: NEVER hardcode passwords. Use `variable` with `sensitive = true` or `random_password` resource. If you verify a hardcoded password like "please_change_this_password", you MUST fix it to use a variable.
+        7. **Cardinality**: STRICTLY follow the user's requested quantity. If "an instance", generate ONE. Do not assume HA.
+        8. **RDS Multi-AZ**: `aws_db_subnet_group` MUST reference subnets in at least TWO different AZs. Create a new private subnet in a different AZ if needed.
+        9. **Web Servers**: If the user asks for a web server, you MUST include `user_data` (base64 encoded if needed, or raw heredoc) to install Apache/Nginx.
+        10. **ASG Health Check**: If ASG is attached to an LB, set `health_check_type = "ELB"`.
+        11. **HA Networking**: If requesting "High Availability", ensure you create 1 NAT Gateway PER Availability Zone (e.g. nat_a in us-east-1a, nat_b in us-east-1b) and separate Route Tables for each private subnet. Avoid Single Points of Failure.
         
         --- OUTPUT REQUIREMENTS ---
         Return JSON with:
@@ -457,13 +566,28 @@ class InfraAgent:
             # Step A: Drafting / Re-Drafting
             if attempt == 0:
                 # First Draft
-                response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
                 try:
+                    response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
                     data = json.loads(response.text)
                     current_hcl = data.get("hcl_code", "")
                     current_test_script = data.get("test_script", "")
+                    
+                    # Log successful draft
+                    total_stages_history.append(PipelineStage(
+                        name="Draft Generation", 
+                        status="success", 
+                        logs=[f"Generated {len(current_hcl)} characters of HCL code", f"Generated {len(current_test_script)} characters of test script"]
+                    ))
                 except Exception as e:
-                    return PipelineResult(success=False, hcl_code="", stages=[], final_message=f"Draft Gen Failed: {str(e)}")
+                    # Log the failure with details
+                    error_msg = f"Draft Generation Failed: {str(e)}"
+                    total_stages_history.append(PipelineStage(
+                        name="Draft Generation",
+                        status="failed",
+                        logs=[error_msg, f"LLM Response Preview: {response.text[:200] if 'response' in locals() else 'No response'}"],
+                        error=str(e)
+                    ))
+                    return PipelineResult(success=False, hcl_code="", stages=total_stages_history, final_message=error_msg)
             else:
                 # Re-Drafting based on Pipeline Error
                 logging_stage = PipelineStage(name=f"Self-Correction (Attempt {attempt+1})", status="running", logs=[f"Pipeline Failed: {last_pipeline_error}", "Refining HCL..."])
@@ -473,23 +597,24 @@ class InfraAgent:
                 logging_stage.status = "success"
 
             # Step B: The Thinking Loop (Inner Peer Review)
-            # Only do deep review on the first draft or if we want rigorous checking every time. 
-            # Let's do it every time to be safe.
-            for review_round in range(2):
-                review = self.review_code(current_hcl, user_prompt)
-                
-                review_logs = [f"Score: {review.score}/100"]
-                review_logs.extend([f"Issue: {i}" for i in review.critical_issues])
-                
-                stage = PipelineStage(name=f"AI Peer Review (Round {review_round+1})", status="success" if review.approved else "warning", logs=review_logs)
-                total_stages_history.append(stage)
-                
-                if review.approved:
-                    break
-                
-                # Refine based on Review
-                current_hcl = self.refine_code(current_hcl, review)
-                total_stages_history.append(PipelineStage(name="Refinement", status="success", logs=["Applied fixes from Peer Review."]))
+            try:
+                for review_round in range(2):
+                    review = self.review_code(current_hcl, user_prompt)
+                    
+                    review_logs = [f"Score: {review.score}/100"]
+                    review_logs.extend([f"Issue: {i}" for i in review.critical_issues])
+                    
+                    stage = PipelineStage(name=f"AI Peer Review (Round {review_round+1})", status="success" if review.approved else "warning", logs=review_logs)
+                    total_stages_history.append(stage)
+                    
+                    if review.approved and len(review.critical_issues) == 0:
+                        break
+                    
+                    # Refine based on Review
+                    current_hcl = self.refine_code(current_hcl, review)
+                    total_stages_history.append(PipelineStage(name="Refinement", status="success", logs=["Applied fixes from Peer Review."]))
+            except Exception as e:
+                 total_stages_history.append(PipelineStage(name="AI Peer Review", status="failed", logs=[f"Review Agent Crashed: {str(e)}"], error=str(e)))
 
             # Step C: Execution
             result = self.pipeline.run_pipeline(current_hcl, current_test_script)

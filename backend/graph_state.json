@@ -1,7 +1,7 @@
 {
   "resources": [
     {
-      "id": "aws_vpc_1",
+      "id": "aws_vpc_main",
       "type": "aws_vpc",
       "properties": {
         "cidr_block": "10.0.0.0/16",
@@ -14,10 +14,64 @@
       "status": "planned"
     },
     {
-      "id": "aws_internet_gateway_1",
+      "id": "aws_subnet_public_1",
+      "type": "aws_subnet",
+      "properties": {
+        "vpc_id": "aws_vpc_main",
+        "cidr_block": "10.0.1.0/24",
+        "availability_zone": "us-east-1a",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "public-subnet-1"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_subnet_public_2",
+      "type": "aws_subnet",
+      "properties": {
+        "vpc_id": "aws_vpc_main",
+        "cidr_block": "10.0.2.0/24",
+        "availability_zone": "us-east-1b",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "public-subnet-2"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_subnet_private_1",
+      "type": "aws_subnet",
+      "properties": {
+        "vpc_id": "aws_vpc_main",
+        "cidr_block": "10.0.101.0/24",
+        "availability_zone": "us-east-1a",
+        "tags": {
+          "Name": "private-subnet-1"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_subnet_private_2",
+      "type": "aws_subnet",
+      "properties": {
+        "vpc_id": "aws_vpc_main",
+        "cidr_block": "10.0.102.0/24",
+        "availability_zone": "us-east-1b",
+        "tags": {
+          "Name": "private-subnet-2"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_internet_gateway_main",
       "type": "aws_internet_gateway",
       "properties": {
-        "vpc_id": "aws_vpc_1",
+        "vpc_id": "aws_vpc_main",
         "tags": {
           "Name": "main-igw"
         }
@@ -25,45 +79,109 @@
       "status": "planned"
     },
     {
-      "id": "public_subnet_1",
-      "type": "aws_subnet",
+      "id": "aws_eip_nat",
+      "type": "aws_eip",
       "properties": {
-        "vpc_id": "aws_vpc_1",
-        "cidr_block": "10.0.1.0/24",
-        "availability_zone": "us-east-1a",
-        "map_public_ip_on_launch": true,
         "tags": {
-          "Name": "public-subnet"
+          "Name": "nat-eip"
         }
       },
       "status": "planned"
     },
     {
-      "id": "private_subnet_1",
-      "type": "aws_subnet",
+      "id": "aws_nat_gateway_main",
+      "type": "aws_nat_gateway",
       "properties": {
-        "vpc_id": "aws_vpc_1",
-        "cidr_block": "10.0.2.0/24",
-        "availability_zone": "us-east-1b",
+        "allocation_id": "aws_eip_nat",
+        "subnet_id": "aws_subnet_public_1",
         "tags": {
-          "Name": "private-subnet"
+          "Name": "main-nat-gateway"
         }
       },
       "status": "planned"
     },
     {
-      "id": "web_sg_1",
+      "id": "aws_route_table_public",
+      "type": "aws_route_table",
+      "properties": {
+        "vpc_id": "aws_vpc_main",
+        "routes": [
+          {
+            "cidr_block": "0.0.0.0/0",
+            "gateway_id": "aws_internet_gateway_main"
+          }
+        ],
+        "tags": {
+          "Name": "public-route-table"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_route_table_private",
+      "type": "aws_route_table",
+      "properties": {
+        "vpc_id": "aws_vpc_main",
+        "routes": [
+          {
+            "cidr_block": "0.0.0.0/0",
+            "nat_gateway_id": "aws_nat_gateway_main"
+          }
+        ],
+        "tags": {
+          "Name": "private-route-table"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_route_table_association_public_1",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "aws_subnet_public_1",
+        "route_table_id": "aws_route_table_public"
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_route_table_association_public_2",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "aws_subnet_public_2",
+        "route_table_id": "aws_route_table_public"
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_route_table_association_private_1",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "aws_subnet_private_1",
+        "route_table_id": "aws_route_table_private"
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_route_table_association_private_2",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "aws_subnet_private_2",
+        "route_table_id": "aws_route_table_private"
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_security_group_alb",
       "type": "aws_security_group",
       "properties": {
-        "name": "web-access-sg",
-        "description": "Allow HTTP inbound traffic for public EC2",
-        "vpc_id": "aws_vpc_1",
+        "name": "alb-sg",
+        "description": "Allow HTTP inbound traffic to ALB",
+        "vpc_id": "aws_vpc_main",
         "ingress": [
           {
-            "description": "HTTP from anywhere",
+            "protocol": "tcp",
             "from_port": 80,
             "to_port": 80,
-            "protocol": "tcp",
             "cidr_blocks": [
               "0.0.0.0/0"
             ]
@@ -71,9 +189,9 @@
         ],
         "egress": [
           {
+            "protocol": "-1",
             "from_port": 0,
             "to_port": 0,
-            "protocol": "-1",
             "cidr_blocks": [
               "0.0.0.0/0"
             ]
@@ -83,20 +201,27 @@
       "status": "planned"
     },
     {
-      "id": "db_sg_1",
+      "id": "aws_security_group_web",
       "type": "aws_security_group",
       "properties": {
-        "name": "db-access-sg",
-        "description": "Allow inbound from web security group",
-        "vpc_id": "aws_vpc_1",
+        "name": "web-sg",
+        "description": "Allow HTTP inbound traffic from ALB",
+        "vpc_id": "aws_vpc_main",
         "ingress": [
           {
-            "description": "Database access from Web SG",
-            "from_port": 3306,
-            "to_port": 3306,
             "protocol": "tcp",
-            "security_groups": [
-              "web_sg_1"
+            "from_port": 80,
+            "to_port": 80,
+            "source_security_group_id": "aws_security_group_alb"
+          }
+        ],
+        "egress": [
+          {
+            "protocol": "-1",
+            "from_port": 0,
+            "to_port": 0,
+            "cidr_blocks": [
+              "0.0.0.0/0"
             ]
           }
         ]
@@ -104,85 +229,224 @@
       "status": "planned"
     },
     {
-      "id": "aws_instance_1",
-      "type": "aws_instance",
+      "id": "aws_lb_main",
+      "type": "aws_lb",
       "properties": {
-        "ami": "ami-0c55b159cbfafe1f0",
-        "instance_type": "t2.micro",
-        "subnet_id": "public_subnet_1",
-        "vpc_security_group_ids": [
-          "web_sg_1"
+        "name": "main-alb",
+        "internal": false,
+        "load_balancer_type": "application",
+        "security_groups": [
+          "aws_security_group_alb"
         ],
-        "tags": {
-          "Name": "web-server"
+        "subnets": [
+          "aws_subnet_public_1",
+          "aws_subnet_public_2"
+        ]
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_lb_target_group_main",
+      "type": "aws_lb_target_group",
+      "properties": {
+        "name": "web-tg",
+        "port": 80,
+        "protocol": "HTTP",
+        "vpc_id": "aws_vpc_main",
+        "target_type": "instance",
+        "health_check": {
+          "enabled": true,
+          "path": "/"
         }
       },
       "status": "planned"
     },
     {
-      "id": "aws_db_instance_1",
-      "type": "aws_db_instance",
+      "id": "aws_lb_listener_main",
+      "type": "aws_lb_listener",
       "properties": {
-        "engine": "mysql",
-        "instance_class": "db.t2.micro",
-        "allocated_storage": 20,
-        "db_name": "mydatabase",
-        "username": "admin",
-        "password": "please_change_this_password",
+        "load_balancer_arn": "aws_lb_main",
+        "port": 80,
+        "protocol": "HTTP",
+        "default_action": {
+          "type": "forward",
+          "target_group_arn": "aws_lb_target_group_main"
+        }
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_launch_template_web",
+      "type": "aws_launch_template",
+      "properties": {
+        "name": "web-server-lt",
+        "instance_type": "t2.micro",
+        "image_id": "ami-0c55b159cbfafe1f0",
         "vpc_security_group_ids": [
-          "db_sg_1"
+          "aws_security_group_web"
         ],
-        "skip_final_snapshot": true,
-        "publicly_accessible": false
+        "user_data": "IyEvYmluL2Jhc2gNCnN1ZG8geXVtIHVwZGF0ZSAteQ0Kc3VkbyB5dW0gaW5zdGFsbCAteSBodHRwZA0Kc3VkbyBzeXN0ZW1jdGwgZW5hYmxlIGh0dHBkDQpzdWRvIHN5c3RlbWN0bCBzdGFydCBodHRwZA0K"
+      },
+      "status": "planned"
+    },
+    {
+      "id": "aws_autoscaling_group_web",
+      "type": "aws_autoscaling_group",
+      "properties": {
+        "name": "web-asg",
+        "min_size": 2,
+        "max_size": 2,
+        "desired_capacity": 2,
+        "vpc_zone_identifier": [
+          "aws_subnet_private_1",
+          "aws_subnet_private_2"
+        ],
+        "launch_template": {
+          "id": "aws_launch_template_web",
+          "version": "$Latest"
+        },
+        "target_group_arns": [
+          "aws_lb_target_group_main"
+        ]
       },
       "status": "planned"
     }
   ],
   "edges": [
     {
-      "source": "aws_vpc_1",
-      "target": "aws_internet_gateway_1",
+      "source": "aws_vpc_main",
+      "target": "aws_subnet_public_1",
       "relation": "contains"
     },
     {
-      "source": "aws_vpc_1",
-      "target": "public_subnet_1",
+      "source": "aws_vpc_main",
+      "target": "aws_subnet_public_2",
       "relation": "contains"
     },
     {
-      "source": "aws_vpc_1",
-      "target": "private_subnet_1",
+      "source": "aws_vpc_main",
+      "target": "aws_subnet_private_1",
       "relation": "contains"
     },
     {
-      "source": "aws_vpc_1",
-      "target": "web_sg_1",
+      "source": "aws_vpc_main",
+      "target": "aws_subnet_private_2",
       "relation": "contains"
     },
     {
-      "source": "aws_vpc_1",
-      "target": "db_sg_1",
+      "source": "aws_vpc_main",
+      "target": "aws_internet_gateway_main",
       "relation": "contains"
     },
     {
-      "source": "public_subnet_1",
-      "target": "aws_instance_1",
+      "source": "aws_vpc_main",
+      "target": "aws_route_table_public",
       "relation": "contains"
     },
     {
-      "source": "private_subnet_1",
-      "target": "aws_db_instance_1",
+      "source": "aws_vpc_main",
+      "target": "aws_route_table_private",
       "relation": "contains"
     },
     {
-      "source": "web_sg_1",
-      "target": "aws_instance_1",
-      "relation": "attaches"
+      "source": "aws_vpc_main",
+      "target": "aws_security_group_alb",
+      "relation": "contains"
     },
     {
-      "source": "db_sg_1",
-      "target": "aws_db_instance_1",
-      "relation": "attaches"
+      "source": "aws_vpc_main",
+      "target": "aws_security_group_web",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_vpc_main",
+      "target": "aws_lb_target_group_main",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_subnet_public_1",
+      "target": "aws_nat_gateway_main",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_subnet_public_1",
+      "target": "aws_route_table_association_public_1",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_subnet_public_2",
+      "target": "aws_route_table_association_public_2",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_subnet_private_1",
+      "target": "aws_route_table_association_private_1",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_subnet_private_2",
+      "target": "aws_route_table_association_private_2",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_eip_nat",
+      "target": "aws_nat_gateway_main",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_route_table_public",
+      "target": "aws_route_table_association_public_1",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_route_table_public",
+      "target": "aws_route_table_association_public_2",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_route_table_private",
+      "target": "aws_route_table_association_private_1",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_route_table_private",
+      "target": "aws_route_table_association_private_2",
+      "relation": "associated_with"
+    },
+    {
+      "source": "aws_security_group_alb",
+      "target": "aws_lb_main",
+      "relation": "protects"
+    },
+    {
+      "source": "aws_security_group_alb",
+      "target": "aws_security_group_web",
+      "relation": "allows_traffic_from"
+    },
+    {
+      "source": "aws_security_group_web",
+      "target": "aws_launch_template_web",
+      "relation": "protects"
+    },
+    {
+      "source": "aws_lb_main",
+      "target": "aws_lb_listener_main",
+      "relation": "contains"
+    },
+    {
+      "source": "aws_lb_target_group_main",
+      "target": "aws_autoscaling_group_web",
+      "relation": "routes_to"
+    },
+    {
+      "source": "aws_lb_listener_main",
+      "target": "aws_lb_target_group_main",
+      "relation": "forwards_to"
+    },
+    {
+      "source": "aws_launch_template_web",
+      "target": "aws_autoscaling_group_web",
+      "relation": "defines"
     }
   ]
 }

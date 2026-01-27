@@ -55,3 +55,23 @@ class PipelineResult(BaseModel):
     hcl_code: str
     stages: List[PipelineStage]
     final_message: str
+
+class ConfirmationReason(BaseModel):
+    """Represents a reason why user confirmation is needed"""
+    resource: Optional[str] = None
+    type: Optional[str] = None
+    reason: str
+    severity: Literal["low", "medium", "high", "critical"]
+
+class ConfirmationRequired(BaseModel):
+    """Indicates if and why user confirmation is needed"""
+    required: bool
+    reasons: List[ConfirmationReason] = Field(default_factory=list)
+    message: str = ""
+
+class SessionState(BaseModel):
+    """Tracks the current deployment workflow state"""
+    phase: Literal["idle", "graph_pending", "code_pending", "deploying"] = "idle"
+    pending_plan: Optional[PlanDiff] = None
+    generated_code: Optional[str] = None
+    test_script: Optional[str] = None

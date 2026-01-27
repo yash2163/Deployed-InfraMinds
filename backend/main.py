@@ -72,6 +72,29 @@ def agent_apply(diff: PlanDiff):
     agent.apply_diff(diff)
     return {"status": "applied", "new_node_count": agent.graph.number_of_nodes()}
 
+@app.post("/agent/plan_graph")
+def agent_plan_graph(req: PromptRequest):
+    """
+    Phase 1 of two-stage deployment: Generate and apply graph plan only.
+    Returns plan + confirmation requirements.
+    """
+    plan = agent.plan_changes(req.prompt)
+    
+    # Apply if passed policy checks
+    if not plan.logs or not any("FAILED" in log for log in plan.logs):
+        agent.apply_diff(plan)
+        agent.session.pending_plan = plan
+        agent.session.phase = "graph_pending"
+    
+    confirmation = agent.needs_user_confirmation(plan)
+    
+    return {
+        "plan": plan,
+        "graph_state": agent.export_state(),
+        "confirmation": confirmation,
+        "session_phase": agent.session.phase
+    }
+
 class ExplainRequest(BaseModel):
     target_node_id: str
     affected_nodes: List[str]
@@ -84,23 +107,77 @@ def simulate_explain(req: ExplainRequest):
     """
     return agent.explain_impact(req.target_node_id, req.affected_nodes)
 
-from generator import TerraformGenerator
-
-@app.get("/agent/export")
-def agent_export():
-    """
-    Phase 4: Terraform Code Generator.
-    Returns the HCL code for the current graph.
-    """
-    gen = TerraformGenerator(agent.graph)
-    files = gen.generate()
-    return files
-
 @app.post("/agent/deploy")
 def agent_deploy(request: PromptRequest):
     """
-    Triggers the Agentic Self-Healing Pipeline.
-    Returns the full log of Draft -> Validate -> Plan -> Apply -> Verify.
+    Two-stage deployment with confirmation checkpoints.
+    
+    Stage 1: User types request → Generate graph → Wait for CONFIRM
+    Stage 2: User types CONFIRM → Generate code → Run validate/plan → Wait for CONFIRM
+    Stage 3: User types CONFIRM → Deploy to LocalStack (apply + verify)
     """
-    result = agent.generate_terraform_agentic(request.prompt)
-    return result
+    user_input = request.prompt.strip()
+    
+    # Check if this is a confirmation
+    if user_input.upper() == "CONFIRM":
+        if agent.session.phase == "graph_pending":
+            # Phase 2: Generate code from approved graph
+            try:
+                code_data = agent.generate_terraform_from_graph()
+                agent.session.generated_code = code_data["hcl_code"]
+                agent.session.test_script = code_data["test_script"]
+                
+                # Run validate + plan (NOT apply yet)
+                from schemas import PipelineStage
+                stages = []
+                
+                # Validate
+                val_stage = agent.pipeline._run_stage("validate", agent.session.generated_code)
+                stages.append(val_stage)
+                
+                if val_stage.status == "success":
+                    # Plan
+                    plan_stage = agent.pipeline._run_stage("plan", agent.session.generated_code)
+                    stages.append(plan_stage)
+                    
+                    agent.session.phase = "code_pending"
+                    
+                    return {
+                        "success": True,
+                        "hcl_code": agent.session.generated_code,
+                        "stages": stages,
+                        "session_phase": "code_pending",
+                        "final_message": "✅ Code generated and validated. Review the Terraform code above. Type CONFIRM to deploy to LocalStack."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "hcl_code": agent.session.generated_code,
+                        "stages": stages,
+                        "final_message": "❌ Generated code failed validation. Please report this issue."
+                    }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "hcl_code": "",
+                    "stages": [],
+                    "final_message": f"Error generating code: {str(e)}"
+                }
+                
+        elif agent.session.phase == "code_pending":
+            # Phase 3: Deploy to LocalStack
+            agent.session.phase = "deploying"
+            result = agent.pipeline.run_pipeline(agent.session.generated_code, agent.session.test_script)
+            agent.session.phase = "idle"  # Reset after deployment
+            return result
+        else:
+            return {
+                "success": False,
+                "hcl_code": "",
+                "stages": [],
+                "final_message": "No pending confirmation. Please start with a deployment request first."
+            }
+    else:
+        # Legacy: Direct deployment (backward compatibility)
+        result = agent.generate_terraform_agentic(user_input)
+        return result

@@ -56,7 +56,9 @@ interface GraphVisualizerProps {
 export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
     const [affectedNodeIds, setAffectedNodeIds] = useState<Set<string>>(new Set());
+    const [isPendingApproval, setIsPendingApproval] = useState(false);
 
     // Poll for graph updates (Phase 1 simplistic approach)
     // In real implementation, we might use WebSockets or just refresh on action
@@ -71,10 +73,10 @@ export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps
                 return {
                     id: res.id,
                     position: { x: 0, y: 0 }, // Placeholder
-                    data: { label: `${res.type}\n${res.id}` },
+                    data: { label: `${res.type}\n${res.id}`, status: res.status },
                     style: {
-                        background: isAffected ? '#fee2e2' : (res.status === 'planned' ? '#f0f9ff' : '#fff'),
-                        border: isAffected ? '2px solid red' : (res.status === 'deleted' ? '2px solid red' : (res.status === 'planned' ? '2px dashed #3b82f6' : '1px solid #777')),
+                        background: isAffected ? '#fee2e2' : (res.status === 'planned' ? '#fff7ed' : '#fff'),
+                        border: isAffected ? '2px solid red' : (res.status === 'deleted' ? '2px solid red' : (res.status === 'planned' ? '2px dashed #f59e0b' : '1px solid #777')),
                         width: 150,
                         color: isAffected ? 'red' : 'black',
                         fontSize: '12px',
@@ -102,6 +104,10 @@ export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps
 
             setNodes(layoutedNodes);
             setEdges(layoutedEdges);
+
+            // Check for pending changes
+            const hasPlanned = state.resources.some(r => r.status === 'planned');
+            setIsPendingApproval(hasPlanned);
         } catch (error) {
             console.error("Failed to fetch graph", error);
         }
@@ -183,39 +189,69 @@ export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps
                 <Controls />
             </ReactFlow>
 
-            {/* Context Menu Overlay */}
-            {contextMenu && (
-                <div
-                    style={{
-                        position: 'fixed',
-                        top: contextMenu.y,
-                        left: contextMenu.x,
-                        zIndex: 1000,
-                        backgroundColor: '#1e293b',
-                        border: '1px solid #475569',
-                        borderRadius: '6px',
-                        padding: '4px',
+
+
+            {/* Pending Approval Banner */}
+            {
+                isPendingApproval && (
+                    <div style={{
+                        position: 'absolute',
+                        top: '10px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        backgroundColor: '#fff7ed', // orange-50
+                        border: '1px solid #f97316', // orange-500
+                        color: '#c2410c', // orange-700
+                        padding: '8px 16px',
+                        borderRadius: '20px',
+                        fontWeight: 'bold',
+                        fontSize: '14px',
+                        zIndex: 10,
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
                         display: 'flex',
-                        flexDirection: 'column',
-                        gap: '2px',
-                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                >
-                    <button
-                        onClick={() => handleAction('details')}
-                        className="px-4 py-2 text-sm text-slate-200 hover:bg-slate-700 rounded text-left"
+                        alignItems: 'center',
+                        gap: '8px'
+                    }}>
+                        <span style={{ fontSize: '18px' }}>⚠️</span> Plan Pending Approval
+                    </div>
+                )
+            }
+
+            {/* Context Menu Overlay */}
+            {
+                contextMenu && (
+                    <div
+                        style={{
+                            position: 'fixed',
+                            top: contextMenu.y,
+                            left: contextMenu.x,
+                            zIndex: 1000,
+                            backgroundColor: '#1e293b',
+                            border: '1px solid #475569',
+                            borderRadius: '6px',
+                            padding: '4px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '2px',
+                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                        }}
+                        onClick={(e) => e.stopPropagation()}
                     >
-                        View {contextMenu.type === 'node' ? 'Resource' : 'Connection'} Details
-                    </button>
-                    <button
-                        onClick={() => handleAction('delete')}
-                        className="px-4 py-2 text-sm text-red-400 hover:bg-red-900/30 rounded text-left"
-                    >
-                        Simulate {contextMenu.type === 'node' ? 'Deletion' : 'One Cut'}
-                    </button>
-                </div>
-            )}
-        </div>
+                        <button
+                            onClick={() => handleAction('details')}
+                            className="px-4 py-2 text-sm text-slate-200 hover:bg-slate-700 rounded text-left"
+                        >
+                            View {contextMenu.type === 'node' ? 'Resource' : 'Connection'} Details
+                        </button>
+                        <button
+                            onClick={() => handleAction('delete')}
+                            className="px-4 py-2 text-sm text-red-400 hover:bg-red-900/30 rounded text-left"
+                        >
+                            Simulate {contextMenu.type === 'node' ? 'Deletion' : 'One Cut'}
+                        </button>
+                    </div>
+                )
+            }
+        </div >
     );
 }
