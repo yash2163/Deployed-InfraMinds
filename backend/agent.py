@@ -3,10 +3,14 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from typing import List, Dict
+from typing import List, Dict, Optional
 from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview, ConfirmationRequired, ConfirmationReason, SessionState
 
+# Import Prompt Providers
+from prompts import localstack, aws_full
+
 load_dotenv()
+# ... (rest of imports)
 
 # Configure Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
@@ -45,33 +49,19 @@ class InfraAgent:
         except Exception as e:
             print(f"Failed to save state: {e}")
 
-    def think(self, user_prompt: str) -> IntentAnalysis:
+    def get_prompt_provider(self, execution_mode: str = "deploy"):
+        if execution_mode == "draft":
+            return aws_full
+        return localstack
+
+    def think(self, user_prompt: str, execution_mode: str = "deploy") -> IntentAnalysis:
         """
         Analyzes the user's intent and generates a high-level plan.
         """
         current_state = self.export_state().model_dump_json()
         
-        prompt = f"""
-        You are InfraMinds, an Autonomous Cloud Architect.
-        
-        Current Infrastructure State (JSON):
-        {current_state}
-        
-        User Request: "{user_prompt}"
-        
-        Task:
-        1. Analyze the user's intent.
-        2. Identify if this is a "Safe Query" or a "Mutation" (change).
-        3. If it's a mutation, identify potential Risks (Blast Radius).
-        4. Suggest specific actions (e.g., "Add RD", "Delete VPC").
-        
-        Output purely in JSON matching this schema:
-        {{
-            "summary": "Brief summary of what the user wants.",
-            "risks": ["Risk 1", "Risk 2"],
-            "suggested_actions": ["Action 1", "Action 2"]
-        }}
-        """
+        provider = self.get_prompt_provider(execution_mode)
+        prompt = provider.get_think_prompt(current_state, user_prompt)
         
         response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         try:
@@ -146,57 +136,14 @@ class InfraAgent:
         
         return violations
 
-    def plan_changes(self, user_prompt: str) -> PlanDiff:
+    def plan_changes(self, user_prompt: str, execution_mode: str = "deploy") -> PlanDiff:
         """
         Generates the concrete graph changes (Diff) with AUTO-CORRECTION.
         """
         current_state = self.export_state().model_dump_json()
+        provider = self.get_prompt_provider(execution_mode)
         
-        base_prompt = f"""
-        You are InfraMinds. Generate the specific graph changes to fulfill the user request.
-        
-        Current State:
-        {current_state}
-        
-        User Request: "{user_prompt}"
-        
-        Rules:
-        - AWS Resources only:
-          - Networking: aws_vpc, aws_subnet, aws_internet_gateway, aws_nat_gateway, aws_eip, aws_route_table, aws_route_table_association
-          - Compute: aws_instance, aws_launch_template, aws_autoscaling_group
-          - Database: aws_db_instance, aws_db_subnet_group
-          - Load Balancing: aws_lb, aws_lb_target_group, aws_lb_listener
-          - Security: aws_security_group, aws_security_group_rule
-        - Edge Direction is STRICT: Parent -> Child.
-        - Example: VPC -> Subnet -> Instance. 
-        - Example: ALB -> Target Group -> Instance OR ASG.
-        - Example: Launch Template -> ASG.
-        - Example: ALB -> Target Group -> Instance.
-        - NEVER do Instance -> Subnet.
-        - If deleting, be precise with IDs.
-        
-        Security Constraints (CRITICAL):
-        - DO NOT allow Open SSH (Port 22) from 0.0.0.0/0. This is a Policy Violation.
-        - For "Public Access", use HTTP (80) or HTTPS (443).
-        - For "Public Access", use HTTP (80) or HTTPS (443).
-        - If SSH is needed, restrict to a specific IP or omit ingress.
-        
-        Cardinality Rules (CRITICAL):
-        - STRICTLY follow the user's requested quantity.
-        - If user says "an instance" or "a database", generate EXACTLY ONE.
-        - Do NOT assume High Availability (2+ instances) unless explicitly requested.
-        - If user explicitly requests "High Availability", "HA", or "Production", default to Multi-AZ resources (2 subnets per tier, 1 NAT Gateway PER AZ for redundancy).
-        - Do NOT generate duplicate resources with different suffixes (e.g. web_1, web_2) unless asked.
-        
-        Output JSON matching PlanDiff schema:
-        {{
-            "add_resources": [ {{ "id": "...", "type": "...", "properties": {{...}} }} ],
-            "remove_resources": ["id1", "id2"],
-            "add_edges": [ {{ "source": "...", "target": "...", "relation": "..." }} ],
-            "remove_edges": [],
-            "reasoning": "Explanation of changes..."
-        }}
-        """
+        base_prompt = provider.get_plan_prompt(current_state, user_prompt)
         
         # --- The Loop ---
         max_retries = 3
@@ -217,8 +164,10 @@ class InfraAgent:
                 
                 plan = PlanDiff(**data)
                 
-                # Verify
-                violations = self.check_policies(plan)
+                # Verify (Skip policy check in draft mode if we want to allow anything)
+                violations = []
+                if execution_mode == "deploy":
+                    violations = self.check_policies(plan)
                 
                 if not violations:
                     # Success!
@@ -503,14 +452,14 @@ class InfraAgent:
                 "test_script": "# Error generating test script"
             }
 
-    def generate_terraform_agentic(self, user_prompt: str) -> PipelineResult:
+    def generate_terraform_agentic(self, user_prompt: str, execution_mode: str = "deploy") -> PipelineResult:
         """
         Stage 1 (Draft): Generates HCL + Python Test Script.
         IMPROVED: Recursive Self-Healing (Think -> Critque -> Refine -> Test -> Retry).
         """
         # 0. Sync Graph State (Best Effort)
         try:
-             plan = self.plan_changes(user_prompt)
+             plan = self.plan_changes(user_prompt, execution_mode)
              if not plan.logs or not any("FAILED" in log for log in plan.logs):
                  self.apply_diff(plan)
         except Exception as e:
@@ -520,38 +469,8 @@ class InfraAgent:
 
         # 1. Draft Code using current state context
         current_state = self.export_state().model_dump_json()
-        
-        prompt = f"""
-        You are a Senior DevOps Engineer. 
-        Task: Write Terraform HCL code and a Python Verification Script.
-        
-        --- INPUTS ---
-        1. User Request: "{user_prompt}"
-        2. Graph State (Current Blueprint): 
-        {current_state}
-        
-        --- CRITICAL INSTRUCTIONS ---
-        1. **Gap Filling:** The Graph State might be incomplete or stale. **TRUST THE USER REQUEST ABOVE ALL.**
-        2. If the user asked for "EC2" and "DB" but the Graph only has "VPC", **YOU MUST GENERATE THE EC2 AND DB HCL**.
-        3. **Completeness:** Ensure all necessary "glue" is present:
-           - Security Groups must have ingress/egress rules.
-           - **CRITICAL:** Terraform Security Groups typically strip default Egress. You MUST explicitly add an `egress` block allowing all traffic (`0.0.0.0/0`, protocol "-1") unless restricted.
-           - Instances must be attached to Subnets.
-           - DBs must have Subnet Groups.
-        4. **Refinement:** If the Graph shows a 'connects_to' edge between Web and DB, implement this as a Security Group Rule allowing traffic on port 3306.
-        5. **HA Support**: Use `aws_lb`, `aws_launch_template`, `aws_autoscaling_group` if requested.
-        6. **Secrets**: NEVER hardcode passwords. Use `variable` with `sensitive = true` or `random_password` resource. If you verify a hardcoded password like "please_change_this_password", you MUST fix it to use a variable.
-        7. **Cardinality**: STRICTLY follow the user's requested quantity. If "an instance", generate ONE. Do not assume HA.
-        8. **RDS Multi-AZ**: `aws_db_subnet_group` MUST reference subnets in at least TWO different AZs. Create a new private subnet in a different AZ if needed.
-        9. **Web Servers**: If the user asks for a web server, you MUST include `user_data` (base64 encoded if needed, or raw heredoc) to install Apache/Nginx.
-        10. **ASG Health Check**: If ASG is attached to an LB, set `health_check_type = "ELB"`.
-        11. **HA Networking**: If requesting "High Availability", ensure you create 1 NAT Gateway PER Availability Zone (e.g. nat_a in us-east-1a, nat_b in us-east-1b) and separate Route Tables for each private subnet. Avoid Single Points of Failure.
-        
-        --- OUTPUT REQUIREMENTS ---
-        Return JSON with:
-        - "hcl_code": The complete main.tf content. Use AWS provider.
-        - "test_script": A python script using boto3 (endpoint_url='http://localhost:4566') to verify resources exist.
-        """
+        provider = self.get_prompt_provider(execution_mode)
+        prompt = provider.get_code_gen_prompt(current_state, user_prompt)
         
         from schemas import PipelineStage # Import locally to avoid circle if any, or just reuse
         total_stages_history = []

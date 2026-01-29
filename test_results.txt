@@ -1,41 +1,31 @@
-Request: I want a highly available web architecture. Create an Application Load Balancer in public subnets that forwards traffic to an Auto Scaling Group with 2 t2.micro instances in private subnets.
+Mode: Real
+Request: High Availability Web App with Application Load Balancer and RDS MySQL
 
 Agent Thought Process
 Intent Analyzed
-The user wants to create a new, highly available web architecture. This involves provisioning a new VPC with public and private subnets, an Application Load Balancer in the public subnets, and an Auto Scaling Group with two t2.micro instances in the private subnets.
+The user wants to create a High Availability Web Application using an Application Load Balancer and an RDS MySQL database. Since ALB and RDS are LocalStack Pro features, a simplified architecture using only free-tier services is proposed. This alternative uses multiple EC2 instances for the web tier and a separate EC2 instance to self-host the MySQL database.
 
 Risks Detected
-Provisioning these resources (VPC, NAT Gateway, ALB, EC2 instances) will incur costs.
-Incorrectly configured Security Groups or network routing could create security vulnerabilities.
-The deployment may fail if it exceeds cloud provider account limits (e.g., VPC or Elastic IP limits).
+This is a mutation that will create new cloud resources and may incur costs.
+The requested services (ALB, RDS) are not available in the LocalStack Free Tier.
+Self-hosting a database on EC2 requires manual management for high availability, backups, and patching, unlike a managed RDS service.
+Without a load balancer, traffic distribution between web servers must be handled by other means (e.g., DNS round-robin).
 Suggested Actions
+Modify Request: Acknowledge limitations and proceed with a simplified architecture.
 Add VPC
-Add Public Subnets
-Add Private Subnets
+Add Public Subnet
+Add Private Subnet
 Add Internet Gateway
-Add NAT Gateway
-Add Route Tables
-Add Security Groups for ALB and EC2 Instances
-Add Application Load Balancer
-Add Target Group
-Add Launch Template with t2.micro instance type
-Add Auto Scaling Group with a desired capacity of 2
+Add Route Table
+Add Security Group for Web Servers
+Add Security Group for Database
+Add EC2 Instance (Web Server 1)
+Add EC2 Instance (Web Server 2)
+Add EC2 Instance (Self-hosted MySQL)
 
-Intent Analyzed
-⚠️ **Graph Plan Generated - Review Required** 🟡 Elastic IP may incur charges if not attached 🟡 NAT Gateway costs ~$32/month 🟡 Load Balancer costs ~$16/month Type **CONFIRM** to proceed with code generation, or ask questions about the plan.
 
-Risks Detected
-Elastic IP may incur charges if not attached
-NAT Gateway costs ~$32/month
-Load Balancer costs ~$16/month
-Technical Explanation
-Review the graph on the left. The infrastructure matches your request.
-
-Recommended Mitigation
-If this looks correct, type CONFIRM to generate Terraform code.
-
-Terraform Code:
-
+main.tf (Generated)
+Close
 terraform {
   required_providers {
     aws = {
@@ -51,230 +41,190 @@ provider "aws" {
   secret_key                  = "test"
   skip_credentials_validation = true
   skip_metadata_api_check     = true
-  skip_requesting_account_id  = true
-  s3_use_path_style           = true
+  s3_force_path_style         = true
+
   endpoints {
-    ec2            = "http://localhost:4566"
-    vpc            = "http://localhost:4566"
-    elbv2          = "http://localhost:4566"
-    iam            = "http://localhost:4566"
-    autoscaling    = "http://localhost:4566"
+    apigateway       = "http://localhost:4566"
+    apigatewayv2     = "http://localhost:4566"
+    cloudformation   = "http://localhost:4566"
+    cloudwatch       = "http://localhost:4566"
+    dynamodb         = "http://localhost:4566"
+    ec2              = "http://localhost:4566"
+    es               = "http://localhost:4566"
+    elasticbeanstalk = "http://localhost:4566"
+    iam              = "http://localhost:4566"
+    kinesis          = "http://localhost:4566"
+    lambda           = "http://localhost:4566"
+    rds              = "http://localhost:4566"
+    redshift         = "http://localhost:4566"
+    route53          = "http://localhost:4566"
+    s3               = "http://localhost:4566"
+    secretsmanager   = "http://localhost:4566"
+    ses              = "http://localhost:4566"
+    sns              = "http://localhost:4566"
+    sqs              = "http://localhost:4566"
+    ssm              = "http://localhost:4566"
+    stepfunctions    = "http://localhost:4566"
+    sts              = "http://localhost:4566"
   }
 }
 
-resource "aws_vpc" "main" {
+resource "aws_vpc" "main_vpc" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
   tags = {
-    Name = "main-vpc"
+    Name = "main_vpc"
   }
 }
 
-resource "aws_subnet" "public_1" {
-  vpc_id                  = aws_vpc.main.id
+resource "aws_subnet" "public_subnet_a" {
+  vpc_id                  = aws_vpc.main_vpc.id
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
   tags = {
-    Name = "public-subnet-1"
+    Name = "public_subnet_a"
   }
 }
 
-resource "aws_subnet" "public_2" {
-  vpc_id                  = aws_vpc.main.id
+resource "aws_subnet" "public_subnet_b" {
+  vpc_id                  = aws_vpc.main_vpc.id
   cidr_block              = "10.0.2.0/24"
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
   tags = {
-    Name = "public-subnet-2"
+    Name = "public_subnet_b"
   }
 }
 
-resource "aws_subnet" "private_1" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.101.0/24"
+resource "aws_subnet" "private_subnet_a" {
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "10.0.3.0/24"
   availability_zone = "us-east-1a"
   tags = {
-    Name = "private-subnet-1"
+    Name = "private_subnet_a"
   }
 }
 
-resource "aws_subnet" "private_2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.102.0/24"
+resource "aws_subnet" "private_subnet_b" {
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "10.0.4.0/24"
   availability_zone = "us-east-1b"
   tags = {
-    Name = "private-subnet-2"
+    Name = "private_subnet_b"
   }
 }
 
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+resource "aws_internet_gateway" "main_igw" {
+  vpc_id = aws_vpc.main_vpc.id
   tags = {
-    Name = "main-igw"
+    Name = "main_igw"
   }
 }
 
-resource "aws_eip" "nat" {
-  tags = {
-    Name = "nat-eip"
-  }
-}
-
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public_1.id
-  tags = {
-    Name = "main-nat-gateway"
-  }
-  depends_on = [aws_internet_gateway.main]
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.main_vpc.id
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
+    gateway_id = aws_internet_gateway.main_igw.id
   }
   tags = {
-    Name = "public-route-table"
+    Name = "public_route_table"
   }
 }
 
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
+resource "aws_route_table_association" "public_assoc_a" {
+  subnet_id      = aws_subnet.public_subnet_a.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table_association" "public_assoc_b" {
+  subnet_id      = aws_subnet.public_subnet_b.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_security_group" "web_sg" {
+  name        = "web_sg"
+  description = "Allow HTTP inbound traffic"
+  vpc_id      = aws_vpc.main_vpc.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+resource "aws_security_group_rule" "web_sg_http_ingress" {
+  type              = "ingress"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.web_sg.id
+}
+
+resource "aws_security_group" "db_sg" {
+  name        = "db_sg"
+  description = "Allow inbound traffic from web security group"
+  vpc_id      = aws_vpc.main_vpc.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group_rule" "db_sg_mysql_ingress" {
+  type                     = "ingress"
+  from_port                = 3306
+  to_port                  = 3306
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.web_sg.id
+  security_group_id        = aws_security_group.db_sg.id
+}
+
+resource "aws_instance" "web_app_a" {
+  ami                    = "ami-0c55b159cbfafe1f0"
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public_subnet_a.id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y nginx
+              systemctl start nginx
+              systemctl enable nginx
+              echo "<h1>Hello from Web App A (Deployed via Terraform)</h1>" > /usr/share/nginx/html/index.html
+              EOF
+
   tags = {
-    Name = "private-route-table"
+    Name = "web_app_a"
   }
 }
 
-resource "aws_route_table_association" "public_1" {
-  subnet_id      = aws_subnet.public_1.id
-  route_table_id = aws_route_table.public.id
-}
+resource "aws_instance" "web_app_b" {
+  ami                    = "ami-0c55b159cbfafe1f0"
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public_subnet_b.id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
 
-resource "aws_route_table_association" "public_2" {
-  subnet_id      = aws_subnet.public_2.id
-  route_table_id = aws_route_table.public.id
-}
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y nginx
+              systemctl start nginx
+              systemctl enable nginx
+              echo "<h1>Hello from Web App B (Deployed via Terraform)</h1>" > /usr/share/nginx/html/index.html
+              EOF
 
-resource "aws_route_table_association" "private_1" {
-  subnet_id      = aws_subnet.private_1.id
-  route_table_id = aws_route_table.private.id
-}
-
-resource "aws_route_table_association" "private_2" {
-  subnet_id      = aws_subnet.private_2.id
-  route_table_id = aws_route_table.private.id
-}
-
-resource "aws_security_group" "alb" {
-  name        = "alb-sg"
-  description = "Allow HTTP inbound traffic to ALB"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    protocol    = "tcp"
-    from_port   = 80
-    to_port     = 80
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    protocol    = "-1"
-    from_port   = 0
-    to_port     = 0
-    cidr_blocks = ["0.0.0.0/0"]
+  tags = {
+    Name = "web_app_b"
   }
 }
 
-resource "aws_security_group" "web" {
-  name        = "web-sg"
-  description = "Allow HTTP inbound traffic from ALB"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    protocol         = "tcp"
-    from_port        = 80
-    to_port          = 80
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    protocol    = "-1"
-    from_port   = 0
-    to_port     = 0
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_lb" "main" {
-  name               = "main-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = [aws_subnet.public_1.id, aws_subnet.public_2.id]
-}
-
-resource "aws_lb_target_group" "main" {
-  name        = "web-tg"
-  port        = 80
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "instance"
-
-  health_check {
-    enabled = true
-    path    = "/"
-  }
-}
-
-resource "aws_lb_listener" "main" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.main.arn
-  }
-}
-
-resource "aws_launch_template" "web" {
-  name_prefix   = "web-server-lt-"
-  instance_type = "t2.micro"
-  image_id      = "ami-0c55b159cbfafe1f0" # Amazon Linux 2 AMI (HVM) - us-east-1
-  vpc_security_group_ids = [aws_security_group.web.id]
-
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    sudo yum update -y
-    sudo yum install -y httpd
-    sudo systemctl enable httpd
-    sudo systemctl start httpd
-    echo "<h1>Deployed via Terraform</h1>" > /var/www/html/index.html
-  EOF
-  )
-}
-
-resource "aws_autoscaling_group" "web" {
-  name                      = "web-asg"
-  min_size                  = 2
-  max_size                  = 2
-  desired_capacity          = 2
-  vpc_zone_identifier       = [aws_subnet.private_1.id, aws_subnet.private_2.id]
-  health_check_type         = "ELB"
-  health_check_grace_period = 300
-
-  launch_template {
-    id      = aws_launch_template.web.id
-    version = "$Latest"
-  }
-
-  target_group_arns = [aws_lb_target_group.main.arn]
-}

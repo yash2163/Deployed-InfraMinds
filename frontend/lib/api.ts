@@ -38,8 +38,8 @@ export const fetchGraph = async (): Promise<GraphState> => {
   return response.data;
 };
 
-export const sendPrompt = async (prompt: string): Promise<IntentAnalysis> => {
-  const response = await api.post<IntentAnalysis>('/agent/think', { prompt });
+export const sendPrompt = async (prompt: string, executionMode: string = "deploy"): Promise<IntentAnalysis> => {
+  const response = await api.post<IntentAnalysis>('/agent/think', { prompt, execution_mode: executionMode });
   return response.data;
 };
 
@@ -62,8 +62,8 @@ export const explainBlastRadius = async (targetNodeId: string, affectedNodes: st
   return response.data;
 }
 
-export const generatePlan = async (prompt: string): Promise<any> => {
-  const response = await api.post('/agent/plan', { prompt });
+export const generatePlan = async (prompt: string, executionMode: string = "deploy"): Promise<any> => {
+  const response = await api.post('/agent/plan', { prompt, execution_mode: executionMode });
   return response.data;
 }
 
@@ -72,8 +72,8 @@ export const applyPlan = async (diff: any): Promise<any> => {
   return response.data;
 }
 
-export const planGraph = async (prompt: string): Promise<any> => {
-  const response = await api.post('/agent/plan_graph', { prompt });
+export const planGraph = async (prompt: string, executionMode: string = "deploy"): Promise<any> => {
+  const response = await api.post('/agent/plan_graph', { prompt, execution_mode: executionMode });
   return response.data;
 }
 
@@ -95,7 +95,7 @@ export interface PipelineResult {
   session_phase?: string;
 }
 
-export const deployAgentic = async (prompt: string): Promise<PipelineResult> => {
-  const response = await api.post('/agent/deploy', { prompt });
+export const deployAgentic = async (prompt: string, executionMode: string = "deploy"): Promise<PipelineResult> => {
+  const response = await api.post('/agent/deploy', { prompt, execution_mode: executionMode });
   return response.data;
 }

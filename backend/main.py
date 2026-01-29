@@ -48,21 +48,31 @@ def simulate_blast(req: SimulationRequest):
 
 class PromptRequest(BaseModel):
     prompt: str
+    execution_mode: str = "deploy" # "deploy" (Free Tier) or "draft" (Full AWS)
 
 @app.post("/agent/think", response_model=IntentAnalysis)
 def agent_think(req: PromptRequest):
     """
-    Phase 3: Real Intelligence (Gemini 1.5 Pro).
+    Phase 3: Real Intelligence (Gemini 2.5 Pro).
     """
-    analysis = agent.think(req.prompt)
+    analysis = agent.think(req.prompt, req.execution_mode)
     return analysis
+
+@app.post("/agent/generate_pipeline", response_model=PipelineResult)
+def run_pipeline(req: PromptRequest):
+    """
+    Runs the full self-healing pipeline: Draft -> Critique -> Refine -> Test -> Deploy.
+    """
+    # Force state synchronization for consistency
+    result = agent.generate_terraform_agentic(req.prompt, req.execution_mode)
+    return result
 
 @app.post("/agent/plan", response_model=PlanDiff)
 def agent_plan(req: PromptRequest):
     """
     Generates the diff plan to be visualized (Ghost Nodes).
     """
-    return agent.plan_changes(req.prompt)
+    return agent.plan_changes(req.prompt, req.execution_mode)
 
 @app.post("/agent/apply")
 def agent_apply(diff: PlanDiff):
@@ -78,7 +88,7 @@ def agent_plan_graph(req: PromptRequest):
     Phase 1 of two-stage deployment: Generate and apply graph plan only.
     Returns plan + confirmation requirements.
     """
-    plan = agent.plan_changes(req.prompt)
+    plan = agent.plan_changes(req.prompt, req.execution_mode)
     
     # Apply if passed policy checks
     if not plan.logs or not any("FAILED" in log for log in plan.logs):

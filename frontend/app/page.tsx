@@ -13,6 +13,7 @@ export default function Home() {
   const [deploymentPhase, setDeploymentPhase] = useState<'idle' | 'graph_pending' | 'code_pending' | 'deploying'>('idle');
   const [showCode, setShowCode] = useState(false);
   const [tfCode, setTfCode] = useState("");
+  const [executionMode, setExecutionMode] = useState<'deploy' | 'draft'>('deploy');
 
   /* New Helper for Reset */
   const handleReset = async () => {
@@ -29,7 +30,7 @@ export default function Home() {
     setResponse(null);
     setExecutionLogs([]);
     try {
-      const res = await sendPrompt(input);
+      const res = await sendPrompt(input, executionMode);
       setResponse(res);
     } catch (err) {
       console.error(err);
@@ -86,7 +87,7 @@ export default function Home() {
       setExecutionLogs([`Confirming phase: ${deploymentPhase}...`]);
 
       try {
-        const pipelineResult = await import('../lib/api').then(m => m.deployAgentic("CONFIRM"));
+        const pipelineResult = await import('../lib/api').then(m => m.deployAgentic("CONFIRM", executionMode));
 
         if (pipelineResult.session_phase === 'code_pending') {
           // Phase 2: Code generated and validated
@@ -153,7 +154,8 @@ export default function Home() {
     setExecutionLogs(["Generating infrastructure plan..."]);
 
     try {
-      const planResult = await import('../lib/api').then(m => m.planGraph(userInput));
+      // Send the input to generate the graph plan first
+      const planResult = await import('../lib/api').then(m => m.planGraph(userInput, executionMode));
 
       setDeploymentPhase('graph_pending');
       setExecutionLogs(["✅ Graph plan generated. Review the visualization."]);
@@ -224,6 +226,7 @@ export default function Home() {
           <button onClick={handleReset} className="hover:text-red-400 transition-colors">Reset Graph</button>
           <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span> Agent Active</div>
           <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> LocalStack Ready</div>
+          <div className="flex items-center gap-1 border border-slate-700 rounded px-2 py-0.5 bg-slate-800 text-xs text-slate-400"><span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span> Free Tier Mode</div>
         </div>
       </header>
 
@@ -239,16 +242,43 @@ export default function Home() {
 
         {/* Right Command Panel */}
         <div className="w-96 border-l border-slate-800 bg-slate-900 flex flex-col">
-          <div className="p-4 border-b border-slate-800">
-            <h2 className="text-sm font-semibold flex items-center gap-2 mb-2">
+          <div className="p-4 border-b border-slate-800 space-y-4">
+            <h2 className="text-sm font-semibold flex items-center gap-2">
               <Terminal className="w-4 h-4 text-purple-400" />
               Agent Command
             </h2>
+
+            {/* New Execution Mode Switch */}
+            <div className="bg-slate-800 p-2 rounded flex flex-col gap-2 border border-slate-700">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-slate-300">Mode</span>
+                <div className="flex bg-slate-900 rounded p-0.5">
+                  <button
+                    onClick={() => setExecutionMode('deploy')}
+                    className={`px-2 py-0.5 text-xs rounded transition-colors ${executionMode === 'deploy' ? 'bg-green-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                  >
+                    Real
+                  </button>
+                  <button
+                    onClick={() => setExecutionMode('draft')}
+                    className={`px-2 py-0.5 text-xs rounded transition-colors ${executionMode === 'draft' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                  >
+                    Draft
+                  </button>
+                </div>
+              </div>
+              <div className="text-[10px] text-slate-500 leading-tight">
+                {executionMode === 'deploy'
+                  ? "Restricted to LocalStack Free Tier. Validates & Deploys."
+                  : "Unrestricted AWS. Plans architecture only (No Deploy)."}
+              </div>
+            </div>
+
             <form onSubmit={handleSubmit} className="flex flex-col gap-2">
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Describe infrastructure changes..."
+                placeholder={executionMode === 'deploy' ? "Describe infrastructure (LocalStack Free Tier)..." : "Describe any AWS infrastructure..."}
                 className="w-full h-24 bg-slate-950 border border-slate-700 rounded p-3 text-sm focus:border-blue-500 focus:outline-none resize-none"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -263,7 +293,7 @@ export default function Home() {
                   type="submit"
                   className="flex-1 flex justify-center items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white rounded py-2 text-sm font-medium transition-colors disabled:opacity-50"
                 >
-                  {loading ? "Thinking..." : <><Terminal className="w-3 h-3" /> Analyze Intent</>}
+                  {loading ? "Thinking..." : <><Terminal className="w-3 h-3" /> Analyze</>}
                 </button>
                 <button
                   type="button"
@@ -272,9 +302,9 @@ export default function Home() {
                   className="flex-1 flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded py-2 text-sm font-medium transition-colors disabled:opacity-50"
                 >
                   <Play className="w-3 h-3" />
-                  {deploymentPhase === 'idle' ? 'Generate Plan' :
-                    deploymentPhase === 'graph_pending' ? 'Confirm Graph' :
-                      deploymentPhase === 'code_pending' ? 'Deploy Code' :
+                  {deploymentPhase === 'idle' ? 'Plan' :
+                    deploymentPhase === 'graph_pending' ? 'Confirm' :
+                      deploymentPhase === 'code_pending' ? 'Deploy' :
                         'Deploying...'}
                 </button>
               </div>
@@ -362,6 +392,6 @@ export default function Home() {
           </div>
         </div>
       </div>
-    </main >
+    </main>
   );
 }

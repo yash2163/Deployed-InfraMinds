@@ -2,6 +2,7 @@
 .DS_Store
 .vscode/
 .idea/
+~$*
 
 # Python / Backend
 __pycache__/
@@ -13,8 +14,18 @@ env/
 venv/
 .env
 backend/.env
+backend/.venv/
 backend/venv/
 backend/__pycache__/
+backend/graph_state.json
+backend/graph_export.json
+
+# Terraform
+backend/terraform_workspace/.terraform/
+backend/terraform_workspace/*.tfstate
+backend/terraform_workspace/*.tfstate.*
+backend/terraform_workspace/.terraform.lock.hcl
+backend/terraform_workspace/localstack_providers_override.tf
 
 # Node / Frontend
 node_modules/

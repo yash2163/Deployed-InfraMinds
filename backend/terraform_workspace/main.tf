@@ -1,98 +1,125 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.0"
+    }
+  }
+}
+
 provider "aws" {
-  region = "us-east-1"
-  # For localstack, access and secret keys can be dummy values
-  access_key = "test"
-  secret_key = "test"
+  region                      = "us-east-1"
+  access_key                  = "test"
+  secret_key                  = "test"
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+
+
+  endpoints {
+    apigateway       = "http://localhost:4566"
+    apigatewayv2     = "http://localhost:4566"
+    cloudformation   = "http://localhost:4566"
+    cloudwatch       = "http://localhost:4566"
+    dynamodb         = "http://localhost:4566"
+    ec2              = "http://localhost:4566"
+    es               = "http://localhost:4566"
+    elasticbeanstalk = "http://localhost:4566"
+    iam              = "http://localhost:4566"
+    kinesis          = "http://localhost:4566"
+    lambda           = "http://localhost:4566"
+    rds              = "http://localhost:4566"
+    redshift         = "http://localhost:4566"
+    route53          = "http://localhost:4566"
+    s3               = "http://localhost:4566"
+    secretsmanager   = "http://localhost:4566"
+    ses              = "http://localhost:4566"
+    sns              = "http://localhost:4566"
+    sqs              = "http://localhost:4566"
+    ssm              = "http://localhost:4566"
+    stepfunctions    = "http://localhost:4566"
+    sts              = "http://localhost:4566"
+  }
 }
 
-data "aws_ami" "amazon_linux_2" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-  enable_dns_support   = true
+resource "aws_vpc" "main_vpc" {
+  cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
+  enable_dns_support   = true
   tags = {
-    Name = "vpc-main"
+    Name = "main_vpc"
   }
 }
 
-resource "aws_internet_gateway" "gw" {
-  vpc_id = aws_vpc.main.id
-  tags = {
-    Name = "igw-main"
-  }
-}
-
-resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
+resource "aws_subnet" "public_subnet_a" {
+  vpc_id                  = aws_vpc.main_vpc.id
   cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
   availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
   tags = {
-    Name = "subnet-public"
+    Name = "public_subnet_a"
   }
 }
 
-resource "aws_subnet" "private" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.2.0/24"
+resource "aws_subnet" "public_subnet_b" {
+  vpc_id                  = aws_vpc.main_vpc.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "us-east-1b"
+  map_public_ip_on_launch = true
+  tags = {
+    Name = "public_subnet_b"
+  }
+}
+
+resource "aws_subnet" "private_subnet_a" {
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "10.0.3.0/24"
+  availability_zone = "us-east-1a"
+  tags = {
+    Name = "private_subnet_a"
+  }
+}
+
+resource "aws_subnet" "private_subnet_b" {
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "10.0.4.0/24"
   availability_zone = "us-east-1b"
   tags = {
-    Name = "subnet-private"
+    Name = "private_subnet_b"
   }
 }
 
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
+resource "aws_internet_gateway" "main_igw" {
+  vpc_id = aws_vpc.main_vpc.id
+  tags = {
+    Name = "main_igw"
+  }
+}
 
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.main_vpc.id
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.gw.id
+    gateway_id = aws_internet_gateway.main_igw.id
   }
-
   tags = {
-    Name = "rt-public"
+    Name = "public_route_table"
   }
 }
 
-resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
+resource "aws_route_table_association" "public_assoc_a" {
+  subnet_id      = aws_subnet.public_subnet_a.id
+  route_table_id = aws_route_table.public_rt.id
 }
 
-resource "aws_security_group" "sg_web" {
-  name        = "sg-web"
-  description = "Allow public HTTP and SSH access"
-  vpc_id      = aws_vpc.main.id
+resource "aws_route_table_association" "public_assoc_b" {
+  subnet_id      = aws_subnet.public_subnet_b.id
+  route_table_id = aws_route_table.public_rt.id
+}
 
-  ingress {
-    description = "HTTP from anywhere"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "SSH from anywhere"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+resource "aws_security_group" "web_sg" {
+  name        = "web_sg"
+  description = "Allow HTTP inbound traffic"
+  vpc_id      = aws_vpc.main_vpc.id
 
   egress {
     from_port   = 0
@@ -100,24 +127,21 @@ resource "aws_security_group" "sg_web" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "sg-web"
-  }
 }
 
-resource "aws_security_group" "sg_db" {
-  name        = "sg-db"
-  description = "Allow access from web security group"
-  vpc_id      = aws_vpc.main.id
+resource "aws_security_group_rule" "web_sg_http_ingress" {
+  type              = "ingress"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.web_sg.id
+}
 
-  ingress {
-    description     = "MySQL from web security group"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.sg_web.id]
-  }
+resource "aws_security_group" "db_sg" {
+  name        = "db_sg"
+  description = "Allow inbound traffic from web security group"
+  vpc_id      = aws_vpc.main_vpc.id
 
   egress {
     from_port   = 0
@@ -125,47 +149,53 @@ resource "aws_security_group" "sg_db" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "sg-db"
-  }
 }
 
-resource "aws_instance" "web" {
-  ami                    = data.aws_ami.amazon_linux_2.id
+resource "aws_security_group_rule" "db_sg_mysql_ingress" {
+  type                     = "ingress"
+  from_port                = 3306
+  to_port                  = 3306
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.web_sg.id
+  security_group_id        = aws_security_group.db_sg.id
+}
+
+resource "aws_instance" "web_app_a" {
+  ami                    = "ami-0c55b159cbfafe1f0"
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.sg_web.id]
-  
+  subnet_id              = aws_subnet.public_subnet_a.id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y nginx
+              systemctl start nginx
+              systemctl enable nginx
+              echo "<h1>Hello from Web App A (Deployed via Terraform)</h1>" > /usr/share/nginx/html/index.html
+              EOF
+
   tags = {
-    Name = "instance-web"
+    Name = "web_app_a"
   }
 }
 
-resource "aws_db_subnet_group" "default" {
-  name       = "main-db-subnet-group"
-  subnet_ids = [aws_subnet.private.id]
+resource "aws_instance" "web_app_b" {
+  ami                    = "ami-0c55b159cbfafe1f0"
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public_subnet_b.id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              yum install -y nginx
+              systemctl start nginx
+              systemctl enable nginx
+              echo "<h1>Hello from Web App B (Deployed via Terraform)</h1>" > /usr/share/nginx/html/index.html
+              EOF
 
   tags = {
-    Name = "db-subnet-group"
-  }
-}
-
-resource "aws_db_instance" "db_private" {
-  identifier             = "db-private"
-  allocated_storage      = 10
-  engine                 = "mysql"
-  engine_version         = "8.0"
-  instance_class         = "db.t3.micro"
-  db_name                = "mydb"
-  username               = "admin"
-  password               = "Password123" # In a real scenario, use AWS Secrets Manager
-  db_subnet_group_name   = aws_db_subnet_group.default.name
-  vpc_security_group_ids = [aws_security_group.sg_db.id]
-  skip_final_snapshot    = true
-  publicly_accessible    = false
-
-  tags = {
-    Name = "db-private"
+    Name = "web_app_b"
   }
 }
