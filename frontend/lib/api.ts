@@ -9,6 +9,37 @@ export const api = axios.create({
   },
 });
 
+export const streamPlanGraph = async (
+  prompt: string,
+  executionMode: string,
+  onChunk: (chunk: any) => void
+) => {
+  const response = await fetch(`${API_URL}/agent/plan_stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, execution_mode: executionMode }),
+  });
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};
+
 export interface GraphResource {
   id: string;
   type: string;

@@ -21,6 +21,32 @@ app.add_middleware(
 # Singleton Agent instance
 agent = InfraAgent()
 
+
+class PromptRequest(BaseModel):
+    prompt: str
+    execution_mode: str = "deploy"
+
+@app.post("/agent/deploy")
+async def agent_deploy(request: PromptRequest):
+    """
+    Streaming Endpoint for Real-Time UI Updates.
+    """
+    return StreamingResponse(
+        agent.generate_terraform_agentic_stream(request.prompt, request.execution_mode),
+        media_type="application/x-ndjson"
+    )
+
+
+@app.post("/agent/plan_stream")
+async def agent_plan_stream(request: PromptRequest):
+    """
+    Streaming Endpoint for Phase 1 (Planning).
+    """
+    return StreamingResponse(
+        agent.plan_graph_stream(request.prompt, request.execution_mode),
+        media_type="application/x-ndjson"
+    )
+
 @app.get("/")
 def read_root():
     return {"status": "InfraMinds Agent Active", "node_count": agent.graph.number_of_nodes()}

@@ -52,11 +52,13 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
 interface GraphVisualizerProps {
     onNodeSelected?: (nodeId: string) => void;
     nodeStatuses?: Record<string, string>;
+    terraformCode?: string | null;
 }
 
-export default function GraphVisualizer({ onNodeSelected, nodeStatuses }: GraphVisualizerProps) {
+export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terraformCode }: GraphVisualizerProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+    const [showCode, setShowCode] = useState(false);
 
     const [affectedNodeIds, setAffectedNodeIds] = useState<Set<string>>(new Set());
     const [isPendingApproval, setIsPendingApproval] = useState(false);
@@ -129,7 +131,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses }: GraphV
         } catch (error) {
             console.error("Failed to fetch graph", error);
         }
-    }, [setNodes, setEdges, affectedNodeIds]);
+    }, [setNodes, setEdges, affectedNodeIds, nodeStatuses]);
 
     useEffect(() => {
         refreshGraph();
@@ -207,7 +209,69 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses }: GraphV
                 <Controls />
             </ReactFlow>
 
+            {/* View Code Button */}
+            {terraformCode && (
+                <button
+                    onClick={(e) => { e.stopPropagation(); setShowCode(true); }}
+                    style={{
+                        position: 'absolute',
+                        top: '10px',
+                        right: '10px',
+                        zIndex: 10,
+                        backgroundColor: '#3b82f6',
+                        color: 'white',
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        border: 'none',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                    }}
+                >
+                    &lt;/&gt; View Code
+                </button>
+            )}
 
+            {/* Code Modal */}
+            {showCode && terraformCode && (
+                <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    backgroundColor: 'rgba(0,0,0,0.85)',
+                    zIndex: 2000,
+                    padding: '20px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    backdropFilter: 'blur(4px)'
+                }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', color: 'white' }}>
+                        <span style={{ fontWeight: 'bold' }}>Generated Terraform Code</span>
+                        <button
+                            onClick={() => setShowCode(false)}
+                            style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', fontSize: '14px' }}
+                        >
+                            ✕ Close
+                        </button>
+                    </div>
+                    <div style={{
+                        flex: 1,
+                        overflow: 'auto',
+                        backgroundColor: '#1e293b',
+                        color: '#e2e8f0',
+                        padding: '16px',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        fontFamily: 'monospace',
+                        border: '1px solid #334155'
+                    }}>
+                        <pre>{terraformCode}</pre>
+                    </div>
+                </div>
+            )}
 
             {/* Pending Approval Banner */}
             {

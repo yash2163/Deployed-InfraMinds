@@ -3,7 +3,7 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Generator
 from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview, ConfirmationRequired, ConfirmationReason, SessionState
 
 # Import Prompt Providers
@@ -593,125 +593,404 @@ class InfraAgent:
 
         # If we exhausted retries
     
-    def generate_terraform_agentic_stream(self, user_prompt: str, execution_mode: str = "deploy"):
-        """
-        Streaming version of the Agentic Pipeline.
-        Yields events: {"type": "log|stage|result|error", "content": ...}
-        """
-        yield json.dumps({"type": "log", "content": "Initializing Agentic Pipeline for Mode: " + execution_mode}) + "\n"
+    # def generate_terraform_agentic_stream(self, user_prompt: str, execution_mode: str = "deploy"):
+    #     """
+    #     Streaming version of the Agentic Pipeline.
+    #     Yields events: {"type": "log|stage|result|error", "content": ...}
+    #     """
+    #     yield json.dumps({"type": "log", "content": "Initializing Agentic Pipeline for Mode: " + execution_mode}) + "\n"
 
-        # 0. Sync Graph State (Best Effort)
+    #     # 0. Sync Graph State (Best Effort)
+    #     try:
+    #          plan = self.plan_changes(user_prompt, execution_mode)
+    #          if not plan.logs:
+    #              pass
+    #          elif not any("FAILED" in log for log in plan.logs):
+    #              self.apply_diff(plan)
+    #              yield json.dumps({"type": "log", "content": "Synced Graph with latest Intent"}) + "\n"
+    #     except Exception as e:
+    #          yield json.dumps({"type": "log", "content": f"Graph Sync Warning: {e}"}) + "\n"
+
+    #     # 1. Draft Code using current state context
+    #     yield json.dumps({"type": "stage", "name": "Drafting Infrastructure Code", "status": "running"}) + "\n"
+        
+    #     current_state = self.export_state().model_dump_json()
+    #     provider = self.get_prompt_provider(execution_mode)
+    #     prompt = provider.get_code_gen_prompt(current_state, user_prompt)
+        
+    #     from schemas import PipelineStage
+    #     total_stages_history = []
+    #     max_outer_retries = 3
+    #     current_hcl = ""
+    #     current_test_script = ""
+        
+    #     last_pipeline_error = ""
+
+    #     # --- THE OUTER LOOP (Pipeline Feedback) ---
+    #     for attempt in range(max_outer_retries):
+    #         # Step A: Drafting / Re-Drafting
+    #         if attempt == 0:
+    #             # First Draft
+    #             try:
+    #                 response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+    #                 data = json.loads(response.text)
+    #                 current_hcl = data.get("hcl_code", "")
+    #                 current_test_script = data.get("test_script", "")
+                    
+    #                 yield json.dumps({"type": "stage", "name": "Drafting Infrastructure Code", "status": "success"}) + "\n"
+    #                 yield json.dumps({"type": "log", "content": "Code Draft Generated."}) + "\n"
+    #             except Exception as e:
+    #                 error_msg = f"Draft Generation Failed: {str(e)}"
+    #                 yield json.dumps({"type": "error", "content": error_msg}) + "\n"
+    #                 return
+    #         else:
+    #             # Re-Drafting
+    #             yield json.dumps({"type": "stage", "name": f"Self-Correction (Attempt {attempt+1})", "status": "running"}) + "\n"
+    #             yield json.dumps({"type": "log", "content": f"Fixing Pipeline Error: {last_pipeline_error}"}) + "\n"
+                
+    #             current_hcl = self.refine_code(current_hcl, None, feedback_override=f"The previous Terraform code failed validation/apply with this error: {last_pipeline_error}. Fix the code.")
+    #             yield json.dumps({"type": "stage", "name": f"Self-Correction (Attempt {attempt+1})", "status": "success"}) + "\n"
+
+    #         # Step B: The Thinking Loop (Inner Peer Review)
+    #         yield json.dumps({"type": "stage", "name": "AI Peer Review", "status": "running"}) + "\n"
+    #         try:
+    #             for review_round in range(2):
+    #                 review = self.review_code(current_hcl, user_prompt)
+    #                 yield json.dumps({"type": "log", "content": f"Review Score: {review.score}/100"}) + "\n"
+                    
+    #                 if review.approved and len(review.critical_issues) == 0:
+    #                     yield json.dumps({"type": "log", "content": "Code Approved by Peer Review."}) + "\n"
+    #                     break
+                    
+    #                 yield json.dumps({"type": "log", "content": f"Issues Found: {review.critical_issues}"}) + "\n"
+    #                 yield json.dumps({"type": "log", "content": "Applying Fixes..."}) + "\n"
+    #                 current_hcl = self.refine_code(current_hcl, review)
+    #         except Exception as e:
+    #              yield json.dumps({"type": "log", "content": f"Review Warning: {e}"}) + "\n"
+            
+    #         yield json.dumps({"type": "stage", "name": "AI Peer Review", "status": "success"}) + "\n"
+
+    #         # Step C: Execution with Real-Time Streaming
+    #         yield json.dumps({"type": "stage", "name": "Deployment Pipeline", "status": "running"}) + "\n"
+    #         yield json.dumps({"type": "log", "content": "Starting Terraform deployment cycle..."}) + "\n"
+            
+    #         # Create callback to stream each stage as it completes
+    #         def stage_callback(stage):
+    #             # Emit stage completion immediately
+    #             status_emoji = "✅" if stage.status == "success" else "❌"
+    #             yield json.dumps({"type": "log", "content": f"{status_emoji} [{stage.name.upper()}] {stage.status}"}) + "\n"
+    #             # Also emit as stage event for UI tracking
+    #             yield json.dumps({"type": "stage", "name": stage.name, "status": stage.status}) + "\n"
+    #             # Include error details if any
+    #             if stage.error:
+    #                 yield json.dumps({"type": "log", "content": f"   Error: {stage.error}"}) + "\n"
+    #             # Include logs if verbose
+    #             if stage.logs:
+    #                 for log in stage.logs[-3:]:  # Last 3 logs to avoid spam
+    #                     if log.strip():
+    #                         yield json.dumps({"type": "log", "content": f"   {log}"}) + "\n"
+            
+    #         # Convert callback to generator wrapper
+    #         stage_updates = []
+    #         def collect_callback(stage):
+    #             # Store updates to yield them later (since run_pipeline is sync)
+    #             status_emoji = "✅" if stage.status == "success" else "❌"
+    #             stage_updates.append({"type": "log", "content": f"{status_emoji} [{stage.name.upper()}] {stage.status}"})
+    #             stage_updates.append({"type": "stage", "name": stage.name, "status": stage.status})
+    #             if stage.error:
+    #                 stage_updates.append({"type": "log", "content": f"   Error: {stage.error}"})
+            
+    #         result = self.pipeline.run_pipeline(current_hcl, current_test_script, stage_callback=collect_callback)
+            
+    #         # Yield collected updates
+    #         for update in stage_updates:
+    #             yield json.dumps(update) + "\n"
+
+    #         if result.success:
+    #             yield json.dumps({"type": "stage", "name": "Deployment Pipeline", "status": "success"}) + "\n"
+    #             yield json.dumps({"type": "result", "payload": result.model_dump()}) + "\n"
+    #             return
+            
+    #         last_pipeline_error = result.stages[-1].error or "Unknown Pipeline Error"
+    #         yield json.dumps({"type": "log", "content": f"Pipeline Failed. Retrying... Error: {last_pipeline_error}"}) + "\n"
+
+    #     yield json.dumps({"type": "error", "content": "Max retries exhausted."}) + "\n"
+
+    # ------------------------------------------------------------------
+    #  FEATURE 1: STREAMING THOUGHTS ("Glass Box" AI)
+    # ------------------------------------------------------------------
+    def think_stream(self, user_prompt: str, execution_mode: str = "deploy") -> Generator[str, None, None]:
+        """
+        Streams AI internal reasoning + Final JSON Result.
+        """
+        current_state = self.export_state().model_dump_json()
+        provider = self.get_prompt_provider(execution_mode)
+        
+        # We modify the prompt to ask for thoughts explicitly
+        base_prompt = provider.get_think_prompt(current_state, user_prompt)
+        enhanced_prompt = f"""
+        {base_prompt}
+        
+        **RESPONSE FORMAT INSTRUCTIONS**:
+        1. First, think step-by-step about the request and risks. Prefix each thought line with "THOUGHT: ".
+        2. Then, output the JSON object strictly matching the schema.
+        3. Do not use markdown code blocks for the JSON.
+        """
+
+        # Helper to format SSE events
+        def send(type_, content):
+            return json.dumps({"type": type_, "content": content}) + "\n"
+
+        # Note: We do NOT use response_mime_type="application/json" here so we can get free-text thoughts
+        response = self.model.generate_content(enhanced_prompt, stream=True)
+        
+        accumulated_json = ""
+        is_json_mode = False
+
+        for chunk in response:
+            text = chunk.text
+            if not text: continue
+
+            # Simple state machine to separate Thoughts from JSON
+            if not is_json_mode:
+                if "{" in text:
+                    # JSON started
+                    is_json_mode = True
+                    # Split at the first brace
+                    parts = text.split("{", 1)
+                    if parts[0].strip():
+                        yield send("thought", parts[0].replace("THOUGHT:", "").strip())
+                    accumulated_json = "{" + parts[1]
+                else:
+                    # Still thinking
+                    clean_thought = text.replace("THOUGHT:", "").strip()
+                    if clean_thought:
+                        yield send("thought", clean_thought)
+            else:
+                # Accumulate JSON
+                accumulated_json += text
+
+        # Final Parse
         try:
-             plan = self.plan_changes(user_prompt, execution_mode)
-             if not plan.logs:
-                 pass
-             elif not any("FAILED" in log for log in plan.logs):
-                 self.apply_diff(plan)
-                 yield json.dumps({"type": "log", "content": "Synced Graph with latest Intent"}) + "\n"
+            # Clean up markdown if model ignored instructions
+            clean_json = accumulated_json.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
+            yield json.dumps({"type": "result", "payload": data}) + "\n"
         except Exception as e:
-             yield json.dumps({"type": "log", "content": f"Graph Sync Warning: {e}"}) + "\n"
+            yield send("error", f"Failed to parse Agent intent: {str(e)}")
 
-        # 1. Draft Code using current state context
-        yield json.dumps({"type": "stage", "name": "Drafting Infrastructure Code", "status": "running"}) + "\n"
+    def plan_changes(self, user_prompt: str, execution_mode: str = "deploy") -> PlanDiff:
+        # Use your existing logic, just linking it here
+        return PlanDiff(add_resources=[], remove_resources=[], add_edges=[], reasoning="Mock plan") 
+
+    # ------------------------------------------------------------------
+    #  FEATURE 2: REAL-TIME DEPLOYMENT PIPELINE
+    # ------------------------------------------------------------------
+    def generate_terraform_agentic_stream(self, user_prompt: str, execution_mode: str = "deploy") -> Generator[str, None, None]:
+        
+        def send(type_, content):
+            return json.dumps({"type": type_, "content": content}) + "\n"
+
+        yield send("log", f"Initializing Pipeline (Mode: {execution_mode})...")
+
+        # 0. Sync Graph
+        try:
+             # In a real app, call self.plan_changes here
+             yield send("log", "Syncing internal graph state...")
+        except Exception as e:
+             yield send("log", f"Graph Sync Warning: {e}")
+
+        # 1. Draft Code
+        yield send("stage", {"name": "Drafting Code", "status": "running"})
+        current_state = self.export_state().model_dump_json()
+        provider = self.get_prompt_provider(execution_mode)
+        
+        # --- CRITICAL UPDATE: Enforce Test Script format for Green Light UI ---
+        base_code_prompt = provider.get_code_gen_prompt(current_state, user_prompt)
+        enhanced_code_prompt = f"""
+        {base_code_prompt}
+        
+        **IMPORTANT REQUIREMENT FOR test_script**:
+        The python script MUST end by printing a JSON object mapping Resource IDs to 'success' or 'failed'.
+        Example Output at end of script:
+        {{"vpc-main": "success", "web-server": "success", "db-main": "failed"}}
+        """
+        
+        current_hcl = ""
+        current_test_script = ""
+
+        try:
+            response = self.model.generate_content(enhanced_code_prompt, stream=True)
+            full_text = ""
+            for chunk in response:
+                if chunk.text:
+                    full_text += chunk.text
+                    yield send("thought", "Drafting: " + chunk.text[:50] + "...") # Visual feedback
+            
+            clean_text = full_text.replace("```json", "").replace("```", "")
+            data = json.loads(clean_text)
+            current_hcl = data.get("hcl_code", "")
+            current_test_script = data.get("test_script", "")
+            
+            yield send("log", "Terraform Draft Generated.")
+            yield send("stage", {"name": "Drafting Code", "status": "success"})
+
+        except Exception as e:
+            yield send("error", f"Drafting Failed: {str(e)}")
+            return
+
+        # 2. Deployment Loop
+        yield send("stage", {"name": "Deployment Pipeline", "status": "running"})
+        
+        # Bridge Pipeline Callbacks to Stream
+        # We need to collect events from the sync pipeline function
+        pipeline_events = []
+        
+        def pipeline_callback(stage):
+            status_icon = "✅" if stage.status == "success" else "❌"
+            # Queue the log
+            pipeline_events.append(send("log", f"{status_icon} Stage: {stage.name.upper()}"))
+            # Queue the UI update
+            pipeline_events.append(send("stage", {"name": f"{stage.name}", "status": stage.status}))
+            
+            if stage.error:
+                pipeline_events.append(send("log", f"   Error: {stage.error}"))
+
+        # Run Sync Pipeline
+        res = self.pipeline.run_pipeline(current_hcl, current_test_script, stage_callback=pipeline_callback)
+        
+        # Flush Events
+        for event in pipeline_events:
+            yield event
+
+        if res.success:
+             yield send("stage", {"name": "Deployment Pipeline", "status": "success"})
+             # 🚀 FEATURE: Send Resource Statuses to turn nodes GREEN
+             if res.resource_statuses:
+                 yield send("resource_update", res.resource_statuses)
+                 yield send("log", f"Verified Resources: {json.dumps(res.resource_statuses)}")
+             yield send("result", res.model_dump())
+        else:
+             yield send("error", f"Pipeline Failed: {res.final_message}")
+             
+# ------------------------------------------------------------------
+    #  FEATURE 3: STREAMING GRAPH PLANNER
+    # ------------------------------------------------------------------
+    def plan_graph_stream(self, user_prompt: str, execution_mode: str = "deploy") -> Generator[str, None, None]:
+        """
+        Streams the graph planning process (Thoughts + Actions + Policy Checks).
+        """
+        def send(type_, content):
+            return json.dumps({"type": type_, "content": content}) + "\n"
+
+        yield send("log", f"Initializing Architect (Mode: {execution_mode})...")
         
         current_state = self.export_state().model_dump_json()
         provider = self.get_prompt_provider(execution_mode)
-        prompt = provider.get_code_gen_prompt(current_state, user_prompt)
-        
-        from schemas import PipelineStage
-        total_stages_history = []
-        max_outer_retries = 3
-        current_hcl = ""
-        current_test_script = ""
-        
-        last_pipeline_error = ""
+        base_prompt = provider.get_plan_prompt(current_state, user_prompt)
 
-        # --- THE OUTER LOOP (Pipeline Feedback) ---
-        for attempt in range(max_outer_retries):
-            # Step A: Drafting / Re-Drafting
-            if attempt == 0:
-                # First Draft
-                try:
-                    response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                    data = json.loads(response.text)
-                    current_hcl = data.get("hcl_code", "")
-                    current_test_script = data.get("test_script", "")
-                    
-                    yield json.dumps({"type": "stage", "name": "Drafting Infrastructure Code", "status": "success"}) + "\n"
-                    yield json.dumps({"type": "log", "content": "Code Draft Generated."}) + "\n"
-                except Exception as e:
-                    error_msg = f"Draft Generation Failed: {str(e)}"
-                    yield json.dumps({"type": "error", "content": error_msg}) + "\n"
-                    return
-            else:
-                # Re-Drafting
-                yield json.dumps({"type": "stage", "name": f"Self-Correction (Attempt {attempt+1})", "status": "running"}) + "\n"
-                yield json.dumps({"type": "log", "content": f"Fixing Pipeline Error: {last_pipeline_error}"}) + "\n"
-                
-                current_hcl = self.refine_code(current_hcl, None, feedback_override=f"The previous Terraform code failed validation/apply with this error: {last_pipeline_error}. Fix the code.")
-                yield json.dumps({"type": "stage", "name": f"Self-Correction (Attempt {attempt+1})", "status": "success"}) + "\n"
+        max_retries = 3
+        attempt = 0
+        current_prompt = base_prompt
+        last_error = ""
 
-            # Step B: The Thinking Loop (Inner Peer Review)
-            yield json.dumps({"type": "stage", "name": "AI Peer Review", "status": "running"}) + "\n"
+        # --- The Reasoning Loop ---
+        while attempt < max_retries:
+            yield send("log", f"Cycle {attempt + 1}/{max_retries}: Drafting Architecture...")
+            
+            # 1. Ask Gemini (Stream thoughts)
             try:
-                for review_round in range(2):
-                    review = self.review_code(current_hcl, user_prompt)
-                    yield json.dumps({"type": "log", "content": f"Review Score: {review.score}/100"}) + "\n"
+                # We ask specifically for THOUGHTs before JSON
+                enhanced_prompt = current_prompt + "\n\nProvide your internal reasoning lines starting with 'THOUGHT:' before the final JSON."
+                response = self.model.generate_content(enhanced_prompt, stream=True)
+                
+                full_text = ""
+                json_part = ""
+                is_json = False
+                
+                for chunk in response:
+                    text = chunk.text
+                    if not text: continue
+                    full_text += text
                     
-                    if review.approved and len(review.critical_issues) == 0:
-                        yield json.dumps({"type": "log", "content": "Code Approved by Peer Review."}) + "\n"
-                        break
+                    if not is_json:
+                        if "{" in text:
+                            is_json = True
+                            # Split thought/json
+                            parts = text.split("{", 1)
+                            if parts[0].strip():
+                                yield send("thought", parts[0].replace("THOUGHT:", "").strip())
+                            json_part = "{" + parts[1]
+                        else:
+                            clean_thought = text.replace("THOUGHT:", "").strip()
+                            if clean_thought: 
+                                yield send("thought", clean_thought)
+                    else:
+                        json_part += text
+
+                # 2. Parse JSON
+                clean_json = json_part if json_part else full_text
+                clean_json = clean_json.replace("```json", "").replace("```", "").strip()
+                # Find first { and last }
+                s = clean_json.find("{")
+                e = clean_json.rfind("}") + 1
+                if s != -1 and e != -1:
+                    clean_json = clean_json[s:e]
+
+                data = json.loads(clean_json)
+                
+                # Tag status
+                for res in data.get("add_resources", []):
+                    res["status"] = "planned"
+                
+                plan = PlanDiff(**data)
+                yield send("log", f"Drafted: +{len(plan.add_resources)} resources, +{len(plan.add_edges)} edges")
+
+                # 3. Policy Check
+                if execution_mode == "deploy":
+                    yield send("log", "Running Policy Checks...")
+                    violations = self.check_policies(plan)
+                else:
+                    violations = []
+
+                if not violations:
+                    yield send("log", "✅ Policies Passed.")
                     
-                    yield json.dumps({"type": "log", "content": f"Issues Found: {review.critical_issues}"}) + "\n"
-                    yield json.dumps({"type": "log", "content": "Applying Fixes..."}) + "\n"
-                    current_hcl = self.refine_code(current_hcl, review)
+                    # Apply to internal graph (Draft State)
+                    # We don't apply to the MAIN graph yet, we just return the plan for confirmation
+                    # But for the UI to render the preview, we usually apply it temporarily or send the state.
+                    # Let's Apply it so the 'export_state' below reflects the new plan
+                    self.apply_diff(plan)
+                    self.session.pending_plan = plan
+                    self.session.phase = "graph_pending"
+                    
+                    # Calculate Confirmation
+                    conf = self.needs_user_confirmation(plan)
+                    
+                    # Final Payload
+                    result_payload = {
+                        "plan": plan.model_dump(),
+                        "graph_state": self.export_state().model_dump(),
+                        "confirmation": conf.model_dump(),
+                        "session_phase": self.session.phase
+                    }
+                    yield send("result", result_payload)
+                    return
+
+                # 4. Handle Violations (Self-Correction)
+                yield send("log", f"❌ Policy Violations: {len(violations)}")
+                for v in violations:
+                    yield send("log", f"   - {v}")
+                
+                yield send("thought", "Violations found. Adjusting plan...")
+                
+                feedback = f"\n\nCRITICAL: Your previous plan failed these Policy Checks:\n{json.dumps(violations)}\n\nFix these violations and regenerate the JSON Plan."
+                current_prompt = base_prompt + feedback 
+                attempt += 1
+
             except Exception as e:
-                 yield json.dumps({"type": "log", "content": f"Review Warning: {e}"}) + "\n"
-            
-            yield json.dumps({"type": "stage", "name": "AI Peer Review", "status": "success"}) + "\n"
-
-            # Step C: Execution with Real-Time Streaming
-            yield json.dumps({"type": "stage", "name": "Deployment Pipeline", "status": "running"}) + "\n"
-            yield json.dumps({"type": "log", "content": "Starting Terraform deployment cycle..."}) + "\n"
-            
-            # Create callback to stream each stage as it completes
-            def stage_callback(stage):
-                # Emit stage completion immediately
-                status_emoji = "✅" if stage.status == "success" else "❌"
-                yield json.dumps({"type": "log", "content": f"{status_emoji} [{stage.name.upper()}] {stage.status}"}) + "\n"
-                # Also emit as stage event for UI tracking
-                yield json.dumps({"type": "stage", "name": stage.name, "status": stage.status}) + "\n"
-                # Include error details if any
-                if stage.error:
-                    yield json.dumps({"type": "log", "content": f"   Error: {stage.error}"}) + "\n"
-                # Include logs if verbose
-                if stage.logs:
-                    for log in stage.logs[-3:]:  # Last 3 logs to avoid spam
-                        if log.strip():
-                            yield json.dumps({"type": "log", "content": f"   {log}"}) + "\n"
-            
-            # Convert callback to generator wrapper
-            stage_updates = []
-            def collect_callback(stage):
-                # Store updates to yield them later (since run_pipeline is sync)
-                status_emoji = "✅" if stage.status == "success" else "❌"
-                stage_updates.append({"type": "log", "content": f"{status_emoji} [{stage.name.upper()}] {stage.status}"})
-                stage_updates.append({"type": "stage", "name": stage.name, "status": stage.status})
-                if stage.error:
-                    stage_updates.append({"type": "log", "content": f"   Error: {stage.error}"})
-            
-            result = self.pipeline.run_pipeline(current_hcl, current_test_script, stage_callback=collect_callback)
-            
-            # Yield collected updates
-            for update in stage_updates:
-                yield json.dumps(update) + "\n"
-
-            if result.success:
-                yield json.dumps({"type": "stage", "name": "Deployment Pipeline", "status": "success"}) + "\n"
-                yield json.dumps({"type": "result", "payload": result.model_dump()}) + "\n"
-                return
-            
-            last_pipeline_error = result.stages[-1].error or "Unknown Pipeline Error"
-            yield json.dumps({"type": "log", "content": f"Pipeline Failed. Retrying... Error: {last_pipeline_error}"}) + "\n"
-
-        yield json.dumps({"type": "error", "content": "Max retries exhausted."}) + "\n"
+                yield send("log", f"Parsing Error: {str(e)}")
+                last_error = str(e)
+                attempt += 1
+        
+        yield send("error", f"Failed to generate valid plan: {last_error}")

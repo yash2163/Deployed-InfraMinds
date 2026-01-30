@@ -91,6 +91,13 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
         2. Graph State (Current Blueprint): 
         {current_state}
         
+        --- CRITICAL TERRAFORM PROVIDER RULES (READ FIRST!) ---
+        **STOP! Before generating ANY code, read this:**
+        - NEVER EVER add `s3_force_path_style` to provider block (removed in AWS Provider v4+)
+        - NEVER EVER add `s3_use_path_style` to provider block (removed in AWS Provider v5+)
+        - These will cause "Unsupported argument" errors and FAIL validation
+        - LocalStack works perfectly with ONLY endpoint overrides (no S3 config needed)
+        
         --- CRITICAL INSTRUCTIONS ---
         1. **Gap Filling:** The Graph State might be incomplete or stale. **TRUST THE USER REQUEST ABOVE ALL.**
         2. If the user asked for "EC2" and "DB" but the Graph only has "VPC", **YOU MUST GENERATE THE EC2 AND DB HCL**.
@@ -110,6 +117,52 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
         7. **Cardinality**: STRICTLY follow the user's requested quantity. If "an instance", generate ONE. Do not assume HA.
         8. **Web Servers**: If the user asks for a web server, you MUST include `user_data` (base64 encoded if needed, or raw heredoc) to install Apache/Nginx.
         9. **HA Networking**: If requesting "High Availability", ensure you create 1 NAT Gateway PER Availability Zone (e.g. nat_a in us-east-1a, nat_b in us-east-1b) and separate Route Tables for each private subnet. Avoid Single Points of Failure.
+        
+        --- REQUIRED PROVIDER TEMPLATE ---
+        Copy this EXACT provider block - DO NOT add or remove ANY lines:
+        ```hcl
+        terraform {{
+          required_providers {{
+            aws = {{
+              source  = "hashicorp/aws"
+              version = "~> 5.0"
+            }}
+          }}
+        }}
+
+        provider "aws" {{
+          region                      = "us-east-1"
+          access_key                  = "test"
+          secret_key                  = "test"
+          skip_credentials_validation = true
+          skip_metadata_api_check     = true
+          skip_requesting_account_id  = true
+
+          endpoints {{
+            ec2        = "http://localhost:4566"
+            s3         = "http://localhost:4566"
+            dynamodb   = "http://localhost:4566"
+            lambda     = "http://localhost:4566"
+            iam        = "http://localhost:4566"
+            apigateway = "http://localhost:4566"
+            sqs        = "http://localhost:4566"
+            sns        = "http://localhost:4566"
+            cloudwatch = "http://localhost:4566"
+          }}
+        }}
+        ```
+        
+        **FINAL VALIDATION - Before returning your code, verify:**
+        ✅ Provider block has EXACTLY 9 arguments (region, access_key, secret_key, 3x skip_, endpoints)
+        ✅ NO `s3_force_path_style` line exists anywhere
+        ✅ NO `s3_use_path_style` line exists anywhere
+        ANY violation will cause pipeline failure!
+
+        --- VERIFICATION SCRIPT GUIDELINES ---
+        1. **Duplicate Resource Handling**: LocalStack often retains old resources. When searching by tags:
+           - **DO NOT** check for `len(matches) == 1`.
+           - **DO** check for `len(matches) >= 1` and take the first match (`matches[0]`).
+           - Failing to do this will cause the verification to fail even if the resource exists!
         
         --- OUTPUT REQUIREMENTS ---
         Return JSON with:

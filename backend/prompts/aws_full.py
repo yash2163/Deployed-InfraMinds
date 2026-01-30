@@ -66,9 +66,27 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
         {current_state}
         
         --- CRITICAL INSTRUCTIONS ---
-        1. **FULL AWS SUPPORT**: Use standard AWS provider (no LocalStack endpoints necessary, but keep structure compatible if possible).
+        1. **FULL AWS SUPPORT**: Use standard AWS provider v5.x.
         2. **Completeness**: Ensure all necessary "glue" is present (Security Groups, Subnets, IAM Roles).
         3. **Security**: Default deny for Security Groups. minimal open ports.
+        
+        --- PROVIDER CONFIGURATION ---
+        Use AWS Provider v5.x:
+        ```hcl
+        terraform {{
+          required_providers {{
+            aws = {{
+              source  = "hashicorp/aws"
+              version = "~> 5.0"
+            }}
+          }}
+        }}
+
+        provider "aws" {{
+          region = "us-east-1"  # or var.region
+        }}
+        ```
+        **CRITICAL**: Do NOT use deprecated arguments like `s3_force_path_style` or `s3_use_path_style` in provider block.
         
         --- OUTPUT REQUIREMENTS ---
         Return JSON with:
