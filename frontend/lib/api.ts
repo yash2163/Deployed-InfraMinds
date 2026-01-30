@@ -93,9 +93,72 @@ export interface PipelineResult {
   stages: PipelineStage[];
   final_message: string;
   session_phase?: string;
+  resource_statuses?: Record<string, string>;
 }
 
 export const deployAgentic = async (prompt: string, executionMode: string = "deploy"): Promise<PipelineResult> => {
   const response = await api.post('/agent/deploy', { prompt, execution_mode: executionMode });
   return response.data;
 }
+
+export const streamAgentThink = async (
+  prompt: string,
+  executionMode: string,
+  onChunk: (chunk: any) => void
+) => {
+  const response = await fetch(`${API_URL}/agent/think`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, execution_mode: executionMode }),
+  });
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};
+
+export const streamAgentDeploy = async (
+  prompt: string,
+  executionMode: string,
+  onChunk: (chunk: any) => void
+) => {
+  const response = await fetch(`${API_URL}/agent/deploy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, execution_mode: executionMode }),
+  });
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};

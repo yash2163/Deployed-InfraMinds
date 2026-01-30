@@ -51,9 +51,10 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
 
 interface GraphVisualizerProps {
     onNodeSelected?: (nodeId: string) => void;
+    nodeStatuses?: Record<string, string>;
 }
 
-export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps) {
+export default function GraphVisualizer({ onNodeSelected, nodeStatuses }: GraphVisualizerProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
@@ -70,13 +71,30 @@ export default function GraphVisualizer({ onNodeSelected }: GraphVisualizerProps
             // 1. Create Raw Nodes (without position)
             const rawNodes: Node[] = state.resources.map((res) => {
                 const isAffected = affectedNodeIds.has(res.id);
+                // Check granular verification status
+                const verificationStatus = nodeStatuses ? nodeStatuses[res.id] : undefined;
+
+                let bgColor = res.status === 'planned' ? '#fff7ed' : '#fff';
+                let borderColor = res.status === 'planned' ? '2px dashed #f59e0b' : '1px solid #777';
+
+                if (isAffected) {
+                    bgColor = '#fee2e2';
+                    borderColor = '2px solid red';
+                } else if (verificationStatus === 'success') {
+                    bgColor = '#dcfce7'; // green-100
+                    borderColor = '2px solid #22c55e'; // green-500
+                } else if (verificationStatus === 'failed') {
+                    bgColor = '#fee2e2'; // red-100
+                    borderColor = '2px solid #ef4444'; // red-500
+                }
+
                 return {
                     id: res.id,
                     position: { x: 0, y: 0 }, // Placeholder
                     data: { label: `${res.type}\n${res.id}`, status: res.status },
                     style: {
-                        background: isAffected ? '#fee2e2' : (res.status === 'planned' ? '#fff7ed' : '#fff'),
-                        border: isAffected ? '2px solid red' : (res.status === 'deleted' ? '2px solid red' : (res.status === 'planned' ? '2px dashed #f59e0b' : '1px solid #777')),
+                        background: bgColor,
+                        border: borderColor,
                         width: 150,
                         color: isAffected ? 'red' : 'black',
                         fontSize: '12px',

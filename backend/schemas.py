@@ -55,6 +55,7 @@ class PipelineResult(BaseModel):
     hcl_code: str
     stages: List[PipelineStage]
     final_message: str
+    resource_statuses: Dict[str, str] = Field(default_factory=dict, description="Map of Resource ID to verification status (success/failed)")
 
 class ConfirmationReason(BaseModel):
     """Represents a reason why user confirmation is needed"""

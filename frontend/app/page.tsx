@@ -15,10 +15,16 @@ export default function Home() {
   const [tfCode, setTfCode] = useState("");
   const [executionMode, setExecutionMode] = useState<'deploy' | 'draft'>('deploy');
 
-  /* New Helper for Reset */
+  /* Streaming Helper for Reset */
+  const [resourceStatuses, setResourceStatuses] = useState<Record<string, string>>({});
+  const [pipelineStages, setPipelineStages] = useState<any[]>([]);
+
   const handleReset = async () => {
     if (!confirm("Reset entire graph?")) return;
     await api.post('/graph/reset');
+    setResourceStatuses({});
+    setExecutionLogs([]);
+    setPipelineStages([]);
     window.location.reload();
   };
 
@@ -30,10 +36,17 @@ export default function Home() {
     setResponse(null);
     setExecutionLogs([]);
     try {
-      const res = await sendPrompt(input, executionMode);
-      setResponse(res);
+      // Use Streaming API
+      await import('../lib/api').then(m => m.streamAgentThink(input, executionMode, (chunk) => {
+        if (chunk.type === 'log') {
+          setExecutionLogs(prev => [...prev, `> ${chunk.content}`]);
+        } else if (chunk.type === 'result') {
+          setResponse(chunk.payload);
+        }
+      }));
     } catch (err) {
       console.error(err);
+      setExecutionLogs(prev => [...prev, "❌ Error reaching agent"]);
     } finally {
       setLoading(false);
     }
@@ -65,7 +78,7 @@ export default function Home() {
     }
   };
 
-  /* Two-Stage Confirmation Deployment Handler */
+  /* Streaming Deployment Handler */
   const handleExecute = async () => {
     if (!input.trim()) return;
 
@@ -77,69 +90,66 @@ export default function Home() {
         setResponse({
           summary: "No pending confirmation",
           risks: ["Please start with a deployment request first"],
-          explanation: ""
+          explanation: "Type your infrastructure request first, then Plan, then Confirm."
         });
         return;
       }
 
       // User is confirming - proceed with next phase
       setLoading(true);
-      setExecutionLogs([`Confirming phase: ${deploymentPhase}...`]);
+      setExecutionLogs(prev => [...prev, `Confirming phase: ${deploymentPhase}...`]);
+      setPipelineStages([]); // Reset stages for new run
 
       try {
-        const pipelineResult = await import('../lib/api').then(m => m.deployAgentic("CONFIRM", executionMode));
+        await import('../lib/api').then(m => m.streamAgentDeploy("CONFIRM", executionMode, (chunk) => {
+          if (chunk.type === 'log') {
+            setExecutionLogs(prev => [...prev, chunk.content]);
+          } else if (chunk.type === 'stage') {
+            // Track stages dynamically if needed, or just log them
+            setPipelineStages(prev => {
+              // Update existing stage or add new
+              const index = prev.findIndex(s => s.name === chunk.name);
+              if (index >= 0) {
+                const newStages = [...prev];
+                newStages[index] = { ...newStages[index], status: chunk.status };
+                return newStages;
+              }
+              return [...prev, { name: chunk.name, status: chunk.status }];
+            });
+            setExecutionLogs(prev => [...prev, `[STAGE] ${chunk.name}: ${chunk.status.toUpperCase()}`]);
+          } else if (chunk.type === 'result') {
+            const result = chunk.payload;
+            if (result.session_phase === 'code_pending') {
+              setTfCode(result.hcl_code);
+              setDeploymentPhase('code_pending');
+              setResponse({
+                summary: "Terraform Code Generated",
+                explanation: "Code has been validated. Review it using 'View Code' button.",
+                mitigation: "Type CONFIRM to deploy to LocalStack for testing"
+              });
+            } else if (result.success) {
+              setDeploymentPhase('idle');
+              setTfCode(result.hcl_code);
+              if (result.resource_statuses) {
+                console.log("Resource Statuses Received:", result.resource_statuses);
+                setResourceStatuses(result.resource_statuses);
+              }
+              setResponse({
+                summary: "Deployment Complete!",
+                explanation: result.final_message
+              });
+              setInput('');
+            } else {
+              setDeploymentPhase('idle');
+            }
+          } else if (chunk.type === 'error') {
+            setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
+          }
+        }));
 
-        if (pipelineResult.session_phase === 'code_pending') {
-          // Phase 2: Code generated and validated
-          setTfCode(pipelineResult.hcl_code);
-          setDeploymentPhase('code_pending');
-
-          const logs: string[] = [];
-          pipelineResult.stages?.forEach((stage: any) => {
-            const symbol = stage.status === 'success' ? '✅' : '⚠️';
-            logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
-            stage.logs?.forEach((l: string) => logs.push(`   > ${l}`));
-          });
-          logs.push(pipelineResult.final_message);
-          setExecutionLogs(logs);
-
-          setResponse({
-            summary: "Terraform Code Generated",
-            explanation: "Code has been validated. Review it using 'View Code' button.",
-            mitigation: "Type CONFIRM to deploy to LocalStack for testing"
-          });
-        } else if (pipelineResult.success) {
-          // Phase 3: Deployment complete
-          setDeploymentPhase('idle');
-          setTfCode(pipelineResult.hcl_code);
-
-          const logs: string[] = [];
-          pipelineResult.stages?.forEach((stage: any) => {
-            const symbol = stage.status === 'success' ? '✅' : (stage.status === 'warning' ? '⚠️' : '❌');
-            logs.push(`${symbol} [STAGE: ${stage.name.toUpperCase()}]`);
-            stage.logs?.forEach((l: string) => logs.push(`   > ${l}`));
-          });
-          logs.push(`🎉 ${pipelineResult.final_message}`);
-          setExecutionLogs(logs);
-
-          setResponse({
-            summary: "Deployment Complete!",
-            explanation: pipelineResult.final_message
-          });
-          setInput(''); // Clear input
-        } else {
-          // Deployment failed
-          const logs: string[] = ["❌ Deployment Failed"];
-          pipelineResult.stages?.forEach((stage: any) => {
-            logs.push(`[${stage.name}]: ${stage.status}`);
-            stage.logs?.forEach((l: string) => logs.push(`   > ${l}`));
-          });
-          setExecutionLogs(logs);
-          setDeploymentPhase('idle');
-        }
       } catch (e) {
         console.error(e);
-        setExecutionLogs(["❌ Error processing confirmation"]);
+        setExecutionLogs(prev => [...prev, "❌ Error processing confirmation"]);
         setDeploymentPhase('idle');
       } finally {
         setLoading(false);
@@ -153,9 +163,18 @@ export default function Home() {
     setResponse(null);
     setExecutionLogs(["Generating infrastructure plan..."]);
 
+    const interval = setInterval(() => {
+      setExecutionLogs(prev => {
+        if (prev.length < 3) return [...prev, "Analyzing intent..."];
+        if (prev.length < 6) return [...prev, "Drafting architecture..."];
+        return prev;
+      });
+    }, 1500);
+
     try {
       // Send the input to generate the graph plan first
       const planResult = await import('../lib/api').then(m => m.planGraph(userInput, executionMode));
+      clearInterval(interval);
 
       setDeploymentPhase('graph_pending');
       setExecutionLogs(["✅ Graph plan generated. Review the visualization."]);
@@ -237,7 +256,7 @@ export default function Home() {
             <h2 className="text-xs uppercase tracking-widest text-slate-500 mb-1">Live Structure</h2>
             <div className="text-lg font-semibold">Production Environment</div>
           </div>
-          <GraphVisualizer onNodeSelected={handleNodeSelected} />
+          <GraphVisualizer onNodeSelected={handleNodeSelected} nodeStatuses={resourceStatuses} />
         </div>
 
         {/* Right Command Panel */}

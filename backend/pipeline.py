@@ -8,14 +8,9 @@ from pydantic import BaseModel
 # Configuration for Simulation Mode
 # If True, bypasses real CLI calls and uses mocked responses/errors
 # Set to False to run actual 'terraform' and 'localstack' commands
-SIMULATION_MODE = True
+SIMULATION_MODE = False
 
 from schemas import PipelineResult, PipelineStage
-
-# Configuration for Simulation Mode
-# If True, bypassed real CLI calls and uses mocked responses/errors
-# Set to False to run actual 'terraform' and 'localstack' commands
-SIMULATION_MODE = True
 
 
 class PipelineManager:
@@ -27,9 +22,10 @@ class PipelineManager:
         if not os.path.exists(self.work_dir):
             os.makedirs(self.work_dir)
 
-    def run_pipeline(self, hcl_code: str, test_script: str) -> PipelineResult:
+    def run_pipeline(self, hcl_code: str, test_script: str, stage_callback=None) -> PipelineResult:
         """
         Executes the 5-stage Self-Healing Pipeline.
+        stage_callback: Optional function called after each stage completes with stage object.
         """
         stages_history = []
         current_hcl = hcl_code
@@ -43,6 +39,8 @@ class PipelineManager:
             # 1. Validate
             val_stage = self._run_stage("validate", current_hcl)
             stages_history.append(val_stage)
+            if stage_callback:
+                stage_callback(val_stage)
             if val_stage.status == "failed":
                 print(f"Attempt {attempt+1}: Validation Failed. Fixing...")
                 current_hcl = self._fix_code(current_hcl, val_stage.error, "terraform validate")
@@ -52,6 +50,8 @@ class PipelineManager:
             # 2. Plan (Mocked logic for now in simulation, real otherwise)
             plan_stage = self._run_stage("plan", current_hcl)
             stages_history.append(plan_stage)
+            if stage_callback:
+                stage_callback(plan_stage)
             if plan_stage.status == "failed":
                 current_hcl = self._fix_code(current_hcl, plan_stage.error, "terraform plan")
                 self._write_files(current_hcl, test_script)
@@ -60,6 +60,8 @@ class PipelineManager:
             # 3. Apply
             apply_stage = self._run_stage("apply", current_hcl)
             stages_history.append(apply_stage)
+            if stage_callback:
+                stage_callback(apply_stage)
             if apply_stage.status == "failed":
                 current_hcl = self._fix_code(current_hcl, apply_stage.error, "terraform apply")
                 self._write_files(current_hcl, test_script)
@@ -68,29 +70,54 @@ class PipelineManager:
             # 4. Verify (Test Script)
             verify_stage = self._run_stage("verify", test_script, is_python=True)
             stages_history.append(verify_stage)
+            if stage_callback:
+                stage_callback(verify_stage)
+            
+            # Parse Verification Status
+            resource_statuses = {}
+            if verify_stage.logs:
+                # Look for the last JSON block in the logs
+                try:
+                    # Combined stdout is in logs[-1] usually, or scattered. 
+                    # We'll join all logs and search for the specific marker or just try to parse the last line.
+                    # Our prompt asks to print "json.dumps(...)" at the end.
+                    full_log = "\n".join(verify_stage.logs)
+                    # Simple heuristic: Look for the last line that looks like a JSON dict
+                    lines = full_log.strip().split('\n')
+                    for line in reversed(lines):
+                        line = line.strip()
+                        if line.startswith('{') and line.endswith('}'):
+                            try:
+                                resource_statuses = json.loads(line)
+                                break
+                            except:
+                                continue
+                except Exception as e:
+                    print(f"Failed to parse verification status: {e}")
+
             if verify_stage.status == "success":
                 return PipelineResult(
                     success=True,
                     hcl_code=current_hcl,
                     stages=stages_history,
-                    final_message="Infrastructure Deployed and Verified Successfully!"
+                    final_message="Infrastructure Deployed and Verified Successfully!",
+                    resource_statuses=resource_statuses
                 )
             else:
-                # Verification failed (runtime logic error?)
-                # In a real scenario, we might also feed this back. 
-                # For this demo, we'll mark as partial success or fail.
                 return PipelineResult(
                     success=False,
                     hcl_code=current_hcl,
                     stages=stages_history,
-                    final_message="Deployment succeeded, but Verification script failed."
+                    final_message="Deployment succeeded, but Verification script failed.",
+                    resource_statuses=resource_statuses
                 )
 
         return PipelineResult(
             success=False,
             hcl_code=current_hcl,
             stages=stages_history,
-            final_message="Pipeline failed after maximum retries."
+            final_message="Pipeline failed after maximum retries.",
+            resource_statuses={}
         )
 
     def _run_stage(self, stage_name: str, content: str, is_python: bool = False) -> PipelineStage:
@@ -163,8 +190,15 @@ class PipelineManager:
                 logs=["Simulating failure..."], 
                 error="Error: invalid resource type 'aws_s3_bucket_fake' on line 12."
             )
+        
+        logs = [f"Simulated {stage_name} output... OK."]
+        if stage_name == "verify":
+             # Mock granular status for frontend visualization testing
+             import json
+             mock_status = {"vpc-main": "success", "subnet-public": "success", "web-server": "success"}
+             logs.append(json.dumps(mock_status))
 
-        return PipelineStage(name=stage_name, status="success", logs=[f"Simulated {stage_name} output... OK."])
+        return PipelineStage(name=stage_name, status="success", logs=logs)
 
     def _fix_code(self, code: str, error: str, context: str) -> str:
         """

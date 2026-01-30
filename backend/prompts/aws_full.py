@@ -73,5 +73,6 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
         --- OUTPUT REQUIREMENTS ---
         Return JSON with:
         - "hcl_code": The complete main.tf content.
-        - "test_script": A python script (placeholder as we are in Draft mode).
+        - "test_script": A python script using boto3 to verify resources exist.
+        - **VERIFICATION OUTPUT**: The script MUST end by printing a JSON object mapping the original Graph Resource IDs (from the input JSON) to their status ('success' or 'failed'). Example: print(json.dumps({{"vpc-main": "success", "web-server": "failed"}}))
     """

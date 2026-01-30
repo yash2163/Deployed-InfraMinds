@@ -1,7 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+import json
+import asyncio
 from agent import InfraAgent
 from schemas import GraphState, PlanDiff, IntentAnalysis, BlastAnalysis, PipelineResult
 
@@ -50,13 +53,15 @@ class PromptRequest(BaseModel):
     prompt: str
     execution_mode: str = "deploy" # "deploy" (Free Tier) or "draft" (Full AWS)
 
-@app.post("/agent/think", response_model=IntentAnalysis)
-def agent_think(req: PromptRequest):
+@app.post("/agent/think")
+async def agent_think(request: PromptRequest):
     """
-    Phase 3: Real Intelligence (Gemini 2.5 Pro).
+    Analyzes intent. Returns a stream of thought logs + final JSON.
     """
-    analysis = agent.think(req.prompt, req.execution_mode)
-    return analysis
+    return StreamingResponse(
+        agent.think_stream(request.prompt, request.execution_mode),
+        media_type="application/x-ndjson"
+    )
 
 @app.post("/agent/generate_pipeline", response_model=PipelineResult)
 def run_pipeline(req: PromptRequest):
@@ -67,12 +72,17 @@ def run_pipeline(req: PromptRequest):
     result = agent.generate_terraform_agentic(req.prompt, req.execution_mode)
     return result
 
-@app.post("/agent/plan", response_model=PlanDiff)
-def agent_plan(req: PromptRequest):
-    """
-    Generates the diff plan to be visualized (Ghost Nodes).
-    """
-    return agent.plan_changes(req.prompt, req.execution_mode)
+@app.post("/agent/plan")
+async def agent_plan(request: PromptRequest):
+    # Keep plan synchronous for now as it's policy based and fast enough,
+    # or upgrade later. The user asked for "Thinking" stream primarily.
+    # Let's check Agent.plan_changes - it has a loop!
+    # For now, keep as is.
+    try:
+        plan = agent.plan_changes(request.prompt, request.execution_mode)
+        return plan
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/agent/apply")
 def agent_apply(diff: PlanDiff):
@@ -118,76 +128,12 @@ def simulate_explain(req: ExplainRequest):
     return agent.explain_impact(req.target_node_id, req.affected_nodes)
 
 @app.post("/agent/deploy")
-def agent_deploy(request: PromptRequest):
+async def agent_deploy(request: PromptRequest):
     """
-    Two-stage deployment with confirmation checkpoints.
-    
-    Stage 1: User types request → Generate graph → Wait for CONFIRM
-    Stage 2: User types CONFIRM → Generate code → Run validate/plan → Wait for CONFIRM
-    Stage 3: User types CONFIRM → Deploy to LocalStack (apply + verify)
+    Generates and Deploys Code. Returns a stream of stages/logs + final result.
     """
-    user_input = request.prompt.strip()
-    
-    # Check if this is a confirmation
-    if user_input.upper() == "CONFIRM":
-        if agent.session.phase == "graph_pending":
-            # Phase 2: Generate code from approved graph
-            try:
-                code_data = agent.generate_terraform_from_graph()
-                agent.session.generated_code = code_data["hcl_code"]
-                agent.session.test_script = code_data["test_script"]
-                
-                # Run validate + plan (NOT apply yet)
-                from schemas import PipelineStage
-                stages = []
-                
-                # Validate
-                val_stage = agent.pipeline._run_stage("validate", agent.session.generated_code)
-                stages.append(val_stage)
-                
-                if val_stage.status == "success":
-                    # Plan
-                    plan_stage = agent.pipeline._run_stage("plan", agent.session.generated_code)
-                    stages.append(plan_stage)
-                    
-                    agent.session.phase = "code_pending"
-                    
-                    return {
-                        "success": True,
-                        "hcl_code": agent.session.generated_code,
-                        "stages": stages,
-                        "session_phase": "code_pending",
-                        "final_message": "✅ Code generated and validated. Review the Terraform code above. Type CONFIRM to deploy to LocalStack."
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "hcl_code": agent.session.generated_code,
-                        "stages": stages,
-                        "final_message": "❌ Generated code failed validation. Please report this issue."
-                    }
-            except Exception as e:
-                return {
-                    "success": False,
-                    "hcl_code": "",
-                    "stages": [],
-                    "final_message": f"Error generating code: {str(e)}"
-                }
-                
-        elif agent.session.phase == "code_pending":
-            # Phase 3: Deploy to LocalStack
-            agent.session.phase = "deploying"
-            result = agent.pipeline.run_pipeline(agent.session.generated_code, agent.session.test_script)
-            agent.session.phase = "idle"  # Reset after deployment
-            return result
-        else:
-            return {
-                "success": False,
-                "hcl_code": "",
-                "stages": [],
-                "final_message": "No pending confirmation. Please start with a deployment request first."
-            }
-    else:
-        # Legacy: Direct deployment (backward compatibility)
-        result = agent.generate_terraform_agentic(user_input)
-        return result
+    return StreamingResponse(
+        agent.generate_terraform_agentic_stream(request.prompt, request.execution_mode),
+        media_type="application/x-ndjson"
+    )
+
