@@ -41,7 +41,7 @@ def get_plan_prompt(current_state: str, user_prompt: str) -> str:
           - Networking: aws_vpc, aws_subnet, aws_internet_gateway, aws_nat_gateway, aws_eip, aws_route_table, aws_route_table_association
           - Compute: aws_instance
           - Database: aws_db_instance, aws_db_subnet_group
-          - Security: aws_security_group, aws_security_group_rule
+          - Security: aws_security_group, aws_security_group_rule, aws_iam_role, aws_iam_role_policy, aws_iam_instance_profile
           - Storage & Messaging: aws_s3_bucket, aws_dynamodb_table, aws_sqs_queue, aws_sns_topic, aws_kinesis_stream
         
         - LocalStack Free Tier Constraints (Strict):
@@ -159,14 +159,33 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
         ANY violation will cause pipeline failure!
 
         --- VERIFICATION SCRIPT GUIDELINES ---
-        1. **Duplicate Resource Handling**: LocalStack often retains old resources. When searching by tags:
+        1. **Functional Verification (CRITICAL)**:
+           - **Do NOT just check if resources exist.**
+           - **Network**: Verify Route Tables have routes to IGW (`0.0.0.0/0`).
+           - **Security**: Verify Security Groups have correct Ingress (Port 80 confirmed) and Egress (0.0.0.0/0 confirmed).
+           - **Permissions**: Verify IAM Roles are actually attached to Instances (Instance Profiles).
+           - **Connectivity**: If a Public IP is available, try `requests.get(timeout=2)` (if web server).
+        
+        2. **Duplicate Resource Handling**: LocalStack often retains old resources. When searching by tags:
            - **DO NOT** check for `len(matches) == 1`.
            - **DO** check for `len(matches) >= 1` and take the first match (`matches[0]`).
-           - Failing to do this will cause the verification to fail even if the resource exists!
         
         --- OUTPUT REQUIREMENTS ---
         Return JSON with:
         - "hcl_code": The complete main.tf content. Use AWS provider.
-        - "test_script": A python script using boto3 (endpoint_url='http://localhost:4566') to verify resources exist. 
-        - **VERIFICATION OUTPUT**: The script MUST end by printing a JSON object mapping the original Graph Resource IDs (from the input JSON) to their status ('success' or 'failed'). Example: print(json.dumps({{"vpc-main": "success", "web-server": "failed"}}))
+        - "test_script": A python script using boto3 (endpoint_url='http://localhost:4566') to verify resources.
+        - **VERIFICATION OUTPUT (MANDATORY)**: 
+          The script **MUST** end by printing a JSON object on the last line mapping the original Graph Resource IDs to their status.
+          Logic:
+            - If functional checks pass -> "success"
+            - If exists but misconfigured (e.g. no IGW route) -> "failed"
+            - If missing -> "failed"
+          Example:
+          ```python
+          print(json.dumps({{
+            "vpc-main": "success", 
+            "public-subnet": "success", 
+            "web-server": "failed" 
+          }}))
+          ```
     """
