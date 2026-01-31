@@ -27,11 +27,18 @@ def get_think_prompt(current_state: str, user_prompt: str) -> str:
         }}
     """
 
-def get_plan_prompt(current_state: str, user_prompt: str) -> str:
+def get_plan_prompt(current_state: str, user_prompt: str, history: list = []) -> str:
+    history_text = ""
+    if history:
+        history_text = "\n        ".join([f"{msg['role'].upper()}: {msg['content']}" for msg in history])
+    
     return f"""
         You are InfraMinds. Generate the specific graph changes to fulfill the user request.
         
-        Current State:
+        Session History:
+        {history_text}
+
+        Current State (Living Graph):
         {current_state}
         
         User Request: "{user_prompt}"

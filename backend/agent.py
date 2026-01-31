@@ -29,6 +29,7 @@ class InfraAgent:
         
         # Session state for confirmation workflow
         self.session = SessionState(phase="idle")
+        self.history = []  # Store conversation history for context
 
         if os.path.exists("graph_state.json"):
             try:
@@ -778,9 +779,7 @@ class InfraAgent:
         except Exception as e:
             yield send("error", f"Failed to parse Agent intent: {str(e)}")
 
-    def plan_changes(self, user_prompt: str, execution_mode: str = "deploy") -> PlanDiff:
-        # Use your existing logic, just linking it here
-        return PlanDiff(add_resources=[], remove_resources=[], add_edges=[], reasoning="Mock plan") 
+
 
     # ------------------------------------------------------------------
     #  FEATURE 2: REAL-TIME DEPLOYMENT PIPELINE
@@ -884,9 +883,13 @@ class InfraAgent:
 
         yield send("log", f"Initializing Architect (Mode: {execution_mode})...")
         
+        # 1. Update History
+        self.history.append({"role": "user", "content": user_prompt})
+
         current_state = self.export_state().model_dump_json()
         provider = self.get_prompt_provider(execution_mode)
-        base_prompt = provider.get_plan_prompt(current_state, user_prompt)
+        # Pass history to prompt
+        base_prompt = provider.get_plan_prompt(current_state, user_prompt, self.history)
 
         max_retries = 3
         attempt = 0
@@ -940,7 +943,7 @@ class InfraAgent:
                 
                 # Tag status
                 for res in data.get("add_resources", []):
-                    res["status"] = "planned"
+                    res["status"] = "proposed"
                 
                 plan = PlanDiff(**data)
                 yield send("log", f"Drafted: +{len(plan.add_resources)} resources, +{len(plan.add_edges)} edges")
@@ -973,6 +976,10 @@ class InfraAgent:
                         "confirmation": conf.model_dump(),
                         "session_phase": self.session.phase
                     }
+                    
+                    # Add to History
+                    self.history.append({"role": "ai", "content": f"Proposed Plan: {plan.reasoning}"})
+
                     yield send("result", result_payload)
                     return
 
@@ -991,5 +998,9 @@ class InfraAgent:
                 yield send("log", f"Parsing Error: {str(e)}")
                 last_error = str(e)
                 attempt += 1
+        
+        # 4. Save AI action to history on success (handled inside the loop before return)
+        # But we returned early. Let's add it there.
+        # Wait, we need to capture the plan summary *before* returning in the success block.
         
         yield send("error", f"Failed to generate valid plan: {last_error}")

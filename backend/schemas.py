@@ -5,7 +5,7 @@ class Resource(BaseModel):
     id: str = Field(..., description="Unique identifier for the resource (e.g., 'vpc-main')")
     type: str = Field(..., description="AWS Resource type (e.g., 'aws_vpc', 'aws_instance')")
     properties: Dict[str, Any] = Field(default_factory=dict, description="Configuration parameters")
-    status: Literal["planned", "active", "deleted"] = "planned"
+    status: Literal["planned", "active", "deleted", "proposed"] = "planned"
 
 class Edge(BaseModel):
     source: str = Field(..., description="Source Resource ID")

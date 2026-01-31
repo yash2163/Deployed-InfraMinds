@@ -40,11 +40,41 @@ export const streamPlanGraph = async (
   }
 };
 
+export const approvePlan = async () => {
+  const response = await api.post('/agent/approve');
+  return response.data;
+};
+
+export const rejectPlan = async () => {
+  const response = await api.post('/agent/reject');
+  return response.data;
+};
+
+export interface CostItem {
+  resource_id: string;
+  resource_type: string;
+  estimated_cost: number;
+  explanation: string;
+}
+
+export interface CostReport {
+  total_monthly_cost: number;
+  currency: string;
+  breakdown: CostItem[];
+  disclaimer: string;
+}
+
+export const fetchCost = async (): Promise<CostReport> => {
+  const response = await api.get('/cost');
+  return response.data;
+};
+
 export interface GraphResource {
   id: string;
   type: string;
   properties: Record<string, any>;
-  status: 'planned' | 'active' | 'deleted';
+  status: 'planned' | 'active' | 'deleted' | 'proposed';
+  description?: string;
 }
 
 export interface GraphEdge {

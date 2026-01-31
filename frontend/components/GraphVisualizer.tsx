@@ -13,7 +13,8 @@ import ReactFlow, {
     NodeMouseHandler,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { fetchGraph, GraphState, simulateBlastRadius } from '../lib/api';
+import { fetchGraph, GraphState, simulateBlastRadius, approvePlan, rejectPlan, fetchCost, CostReport } from '../lib/api';
+import { Check, X, DollarSign } from 'lucide-react';
 
 import dagre from 'dagre';
 
@@ -60,20 +61,43 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
     const [showCode, setShowCode] = useState(false);
 
+    const [isInitialLoad, setIsInitialLoad] = useState(true);
+    const [costReport, setCostReport] = useState<CostReport | null>(null);
+    const [showCostModal, setShowCostModal] = useState(false);
+
+    // Missing state variables restore
     const [affectedNodeIds, setAffectedNodeIds] = useState<Set<string>>(new Set());
     const [isPendingApproval, setIsPendingApproval] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false);
 
-    // Poll for graph updates (Phase 1 simplistic approach)
-    // In real implementation, we might use WebSockets or just refresh on action
+    // Poll for graph updates
+    // Poll for graph updates
     const refreshGraph = useCallback(async () => {
         try {
             const state = await fetchGraph();
             if (!state) return;
 
-            // 1. Create Raw Nodes (without position)
+            // Check for pending approval (proposed status only)
+            const hasProposed = state.resources.some(r => r.status === 'proposed');
+            setIsPendingApproval(hasProposed);
+
+            // Fetch Cost
+            setNodes((currentNodes) => {
+                const nodeCountChanged = currentNodes.length !== state.resources.length;
+                const shouldFetch = nodeCountChanged || isInitialLoad;
+
+                if (shouldFetch) {
+                    fetchCost().then(setCostReport).catch(e => console.error(e));
+                    setIsInitialLoad(false);
+                }
+
+                // We just return current nodes here to not block the separate update
+                return currentNodes;
+            });
+
+            // Process Data
             const rawNodes: Node[] = state.resources.map((res) => {
                 const isAffected = affectedNodeIds.has(res.id);
-                // Check granular verification status
                 const verificationStatus = nodeStatuses ? nodeStatuses[res.id] : undefined;
 
                 let bgColor = res.status === 'planned' ? '#fff7ed' : '#fff';
@@ -83,17 +107,31 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                     bgColor = '#fee2e2';
                     borderColor = '2px solid red';
                 } else if (verificationStatus === 'success') {
-                    bgColor = '#dcfce7'; // green-100
-                    borderColor = '2px solid #22c55e'; // green-500
+                    bgColor = '#dcfce7';
+                    borderColor = '2px solid #22c55e';
                 } else if (verificationStatus === 'failed') {
-                    bgColor = '#fee2e2'; // red-100
-                    borderColor = '2px solid #ef4444'; // red-500
+                    bgColor = '#fee2e2';
+                    borderColor = '2px solid #ef4444';
                 }
 
+                if (res.status === 'proposed') {
+                    bgColor = '#eff6ff'; // blue-50
+                    borderColor = '2px dashed #3b82f6';
+                }
+
+                // We need to access current position. 
+                // Since we are outside setNodes, we can't access 'currentNodes' easily without dependency.
+                // However, we can use a functional update pattern for the FINAL setNodes call.
                 return {
                     id: res.id,
-                    position: { x: 0, y: 0 }, // Placeholder
-                    data: { label: `${res.type}\n${res.id}`, status: res.status },
+                    data: {
+                        label: `${res.type}\n${res.id}`,
+                        status: res.status,
+                        type: res.type,
+                        id: res.id,
+                        description: res.description || "No description available.",
+                        properties: res.properties
+                    },
                     style: {
                         background: bgColor,
                         border: borderColor,
@@ -101,37 +139,59 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                         color: isAffected ? 'red' : 'black',
                         fontSize: '12px',
                         fontWeight: 'bold',
-                        boxShadow: '0px 4px 6px rgba(0,0,0,0.1)' // Add some depth
-                    }
+                        boxShadow: '0px 4px 6px rgba(0,0,0,0.1)',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        padding: '10px'
+                    },
+                    position: { x: 0, y: 0 } // Placeholder, will be merged
                 };
             });
 
-            const rawEdges: Edge[] = state.edges.map((edge, i) => {
+            const rawEdges: Edge[] = state.edges.map((edge) => {
                 const isAffected = affectedNodeIds.has(edge.source) || affectedNodeIds.has(edge.target);
+                const isProposed = edge.relation === 'proposed' || (rawNodes.find(n => n.id === edge.source)?.data.status === 'proposed');
+
                 return {
-                    id: `e-${i}`,
+                    id: `e-${edge.source}-${edge.target}`,
                     source: edge.source,
                     target: edge.target,
                     animated: true,
                     label: edge.relation,
-                    style: { stroke: isAffected ? 'red' : '#b1b1b7' },
+                    style: { stroke: isAffected ? 'red' : (isProposed ? '#3b82f6' : '#b1b1b7'), strokeDasharray: isProposed ? '5,5' : '0' },
                     labelStyle: { fill: isAffected ? 'red' : '#b1b1b7' }
                 };
             });
 
-            // 2. Apply Dagre Layout
-            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(rawNodes, rawEdges);
+            // Update Edges
+            setEdges(rawEdges);
 
-            setNodes(layoutedNodes);
-            setEdges(layoutedEdges);
+            // Update Nodes with Layout Logic
+            setNodes((currentNodes) => {
+                const nodeCountChanged = currentNodes.length !== state.resources.length;
 
-            // Check for pending changes
-            const hasPlanned = state.resources.some(r => r.status === 'planned');
-            setIsPendingApproval(hasPlanned);
+                // Merge positions
+                const nodesWithPositions = rawNodes.map(node => {
+                    const existing = currentNodes.find(n => n.id === node.id);
+                    if (existing) {
+                        return { ...node, position: existing.position };
+                    }
+                    return node;
+                });
+
+                if (isInitialLoad || nodeCountChanged) {
+                    const { nodes: layoutedNodes } = getLayoutedElements(nodesWithPositions, rawEdges);
+                    return layoutedNodes;
+                }
+
+                return nodesWithPositions;
+            });
+
         } catch (error) {
             console.error("Failed to fetch graph", error);
         }
-    }, [setNodes, setEdges, affectedNodeIds, nodeStatuses]);
+    }, [affectedNodeIds, nodeStatuses, isInitialLoad, setNodes, setEdges]);
 
     useEffect(() => {
         refreshGraph();
@@ -164,6 +224,8 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         });
     }
 
+    const [selectedDetailNode, setSelectedDetailNode] = useState<any>(null);
+
     const handleAction = (action: 'details' | 'delete') => {
         if (!contextMenu) return;
 
@@ -185,7 +247,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         } else if (action === 'details') {
             if (contextMenu.type === 'node') {
                 const node = nodes.find(n => n.id === contextMenu.id);
-                if (node) alert(`Resource Details:\n\n${JSON.stringify(node.data, null, 2)}`);
+                if (node) setSelectedDetailNode(node.data);
             } else {
                 const edge = edges.find(e => e.id === contextMenu.id);
                 if (edge) alert(`Connection Details:\n\nSource: ${edge.source}\nTarget: ${edge.target}\nRelation: ${edge.label}`);
@@ -281,9 +343,9 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                         top: '10px',
                         left: '50%',
                         transform: 'translateX(-50%)',
-                        backgroundColor: '#fff7ed', // orange-50
-                        border: '1px solid #f97316', // orange-500
-                        color: '#c2410c', // orange-700
+                        backgroundColor: '#eff6ff',
+                        border: '1px solid #3b82f6',
+                        color: '#1e40af',
                         padding: '8px 16px',
                         borderRadius: '20px',
                         fontWeight: 'bold',
@@ -292,12 +354,128 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                         boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '8px'
+                        gap: '12px'
                     }}>
-                        <span style={{ fontSize: '18px' }}>⚠️</span> Plan Pending Approval
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>🤖</span> AI Proposed Changes
+                        </span>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                                onClick={async (e) => {
+                                    e.stopPropagation();
+                                    setIsProcessing(true);
+                                    try {
+                                        await approvePlan();
+                                        await refreshGraph();
+                                    } finally {
+                                        setIsProcessing(false);
+                                    }
+                                }}
+                                disabled={isProcessing}
+                                className={`flex items-center gap-1 px-3 py-1 bg-green-600 text-white rounded-full text-xs transition-colors ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'}`}
+                            >
+                                <Check size={14} /> {isProcessing ? 'Saving...' : 'Accept'}
+                            </button>
+                            <button
+                                onClick={async (e) => {
+                                    e.stopPropagation();
+                                    setIsProcessing(true);
+                                    try {
+                                        await rejectPlan();
+                                        await refreshGraph();
+                                    } finally {
+                                        setIsProcessing(false);
+                                    }
+                                }}
+                                disabled={isProcessing}
+                                className={`flex items-center gap-1 px-3 py-1 bg-red-600 text-white rounded-full text-xs transition-colors ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-700'}`}
+                            >
+                                <X size={14} /> {isProcessing ? 'Reverting...' : 'Reject'}
+                            </button>
+                        </div>
                     </div>
                 )
             }
+
+            {/* Cost Badge */}
+            {costReport && (
+                <div
+                    onClick={() => setShowCostModal(true)}
+                    style={{
+                        position: 'absolute',
+                        top: '10px',
+                        left: '10px', // Top Left to balance View Code which is Top Right
+                        zIndex: 10,
+                        backgroundColor: '#ecfdf5', // emerald-50
+                        border: '1px solid #10b981', // emerald-500
+                        color: '#047857', // emerald-700
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                    }}
+                >
+                    <DollarSign size={14} /> Est. ${costReport.total_monthly_cost.toFixed(2)}/mo
+                </div>
+            )}
+
+            {/* Cost Breakdown Modal */}
+            {showCostModal && costReport && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    width: '100vw',
+                    height: '100vh',
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    zIndex: 3000, // Higher than code modal
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backdropFilter: 'blur(2px)'
+                }} onClick={() => setShowCostModal(false)}>
+                    <div style={{
+                        backgroundColor: '#fff',
+                        borderRadius: '12px',
+                        width: '500px',
+                        maxHeight: '80vh',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ padding: '20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b' }}>Monthly Cost Estimate</h3>
+                            <button onClick={() => setShowCostModal(false)} style={{ color: '#64748b' }}>✕</button>
+                        </div>
+                        <div style={{ padding: '20px', overflowY: 'auto' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
+                                <span>Total</span>
+                                <span>${costReport.total_monthly_cost.toFixed(2)}</span>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                {costReport.breakdown.map((item, i) => (
+                                    <div key={i} style={{ padding: '12px', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', marginBottom: '4px', color: '#334155' }}>
+                                            <span>{item.resource_type} ({item.resource_id})</span>
+                                            <span>${item.estimated_cost.toFixed(2)}</span>
+                                        </div>
+                                        <div style={{ fontSize: '12px', color: '#64748b' }}>{item.explanation}</div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div style={{ marginTop: '20px', fontSize: '10px', color: '#94a3b8', textAlign: 'center' }}>
+                                {costReport.disclaimer}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Context Menu Overlay */}
             {
@@ -334,6 +512,89 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                     </div>
                 )
             }
+            {/* Resource Details Modal */}
+            {selectedDetailNode && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    width: '100vw',
+                    height: '100vh',
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    zIndex: 3000,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backdropFilter: 'blur(2px)'
+                }} onClick={() => setSelectedDetailNode(null)}>
+                    <div style={{
+                        backgroundColor: '#1e293b',
+                        color: '#f8fafc',
+                        borderRadius: '12px',
+                        width: '600px',
+                        maxHeight: '80vh',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden',
+                        border: '1px solid #334155',
+                        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ padding: '20px', borderBottom: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0f172a' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ padding: '8px', backgroundColor: 'rgba(59, 130, 246, 0.2)', borderRadius: '8px' }}>
+                                    <span style={{ fontSize: '20px' }}>📦</span>
+                                </div>
+                                <div>
+                                    <h3 style={{ fontSize: '16px', fontWeight: 'bold' }}>{selectedDetailNode.id}</h3>
+                                    <div style={{ fontSize: '12px', color: '#94a3b8', fontFamily: 'monospace' }}>{selectedDetailNode.type}</div>
+                                </div>
+                            </div>
+                            <button onClick={() => setSelectedDetailNode(null)} style={{ color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px' }}>✕</button>
+                        </div>
+
+                        <div style={{ padding: '24px', overflowY: 'auto' }}>
+                            {/* Description Section */}
+                            <div style={{ marginBottom: '24px' }}>
+                                <h4 style={{ fontSize: '12px', textTransform: 'uppercase', fontWeight: 'bold', color: '#64748b', marginBottom: '8px', letterSpacing: '0.05em' }}>Description</h4>
+                                <p style={{ fontSize: '14px', color: '#cbd5e1', lineHeight: '1.6', backgroundColor: 'rgba(30, 41, 59, 0.5)', padding: '12px', borderRadius: '8px', border: '1px solid #334155' }}>
+                                    {selectedDetailNode.description}
+                                </p>
+                            </div>
+
+                            {/* Configuration Table */}
+                            <div>
+                                <h4 style={{ fontSize: '12px', textTransform: 'uppercase', fontWeight: 'bold', color: '#64748b', marginBottom: '8px', letterSpacing: '0.05em' }}>Configuration</h4>
+                                <div style={{ border: '1px solid #334155', borderRadius: '8px', overflow: 'hidden' }}>
+                                    <table style={{ width: '100%', fontSize: '14px', borderCollapse: 'collapse' }}>
+                                        <thead style={{ backgroundColor: '#1e293b', color: '#94a3b8', textTransform: 'uppercase', fontSize: '12px' }}>
+                                            <tr>
+                                                <th style={{ padding: '8px 16px', borderBottom: '1px solid #334155', textAlign: 'left' }}>Property</th>
+                                                <th style={{ padding: '8px 16px', borderBottom: '1px solid #334155', textAlign: 'left' }}>Value</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {selectedDetailNode.properties && Object.entries(selectedDetailNode.properties).map(([key, value], i) => (
+                                                <tr key={key} style={{ borderBottom: '1px solid #334155', backgroundColor: i % 2 === 0 ? '#0f172a' : '#1e293b' }}>
+                                                    <td style={{ padding: '8px 16px', fontFamily: 'monospace', color: '#93c5fd' }}>{key}</td>
+                                                    <td style={{ padding: '8px 16px', color: '#cbd5e1', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                                                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {(!selectedDetailNode.properties || Object.keys(selectedDetailNode.properties).length === 0) && (
+                                                <tr>
+                                                    <td colSpan={2} style={{ padding: '16px', textAlign: 'center', color: '#64748b', fontStyle: 'italic' }}>No specific configuration properties.</td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div >
     );
 }

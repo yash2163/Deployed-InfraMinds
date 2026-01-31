@@ -7,6 +7,7 @@ import json
 import asyncio
 from agent import InfraAgent
 from schemas import GraphState, PlanDiff, IntentAnalysis, BlastAnalysis, PipelineResult
+from cost import CostEstimator, CostReport
 
 app = FastAPI(title="InfraMinds Agent Core")
 
@@ -20,6 +21,7 @@ app.add_middleware(
 
 # Singleton Agent instance
 agent = InfraAgent()
+cost_estimator = CostEstimator()
 
 
 class PromptRequest(BaseModel):
@@ -58,9 +60,19 @@ def get_graph():
 
 @app.post("/graph/reset")
 def reset_graph():
-    """Clears the graph state."""
+    """Clears the graph state and session history."""
     agent.graph.clear()
-    return {"message": "Graph reset"}
+    agent.session.phase = "idle"
+    agent.session.pending_plan = None
+    agent.history = []  # Clear conversation history
+    agent.save_state_to_disk()
+    return {"message": "Graph and Session reset"}
+
+@app.get("/cost", response_model=CostReport)
+def get_cost():
+    """Returns the estimated cost of the current infrastructure."""
+    current_resources = agent.export_state().resources
+    return cost_estimator.estimate_costs(current_resources)
 
 class SimulationRequest(BaseModel):
     target_node_id: str
@@ -126,11 +138,23 @@ def agent_plan_graph(req: PromptRequest):
     """
     plan = agent.plan_changes(req.prompt, req.execution_mode)
     
-    # Apply if passed policy checks
+    # Do NOT apply immediately. Store as pending.
     if not plan.logs or not any("FAILED" in log for log in plan.logs):
-        agent.apply_diff(plan)
         agent.session.pending_plan = plan
         agent.session.phase = "graph_pending"
+        
+        # Add "proposed" status to resources for visualization
+        for res in plan.add_resources:
+            res.status = "proposed"
+            # Temporarily add to graph for visualization? 
+            # Better approach: Return the plan, and Frontend overlays it.
+            # OR: Add to graph with status="proposed" and filter out during generation if rejected.
+            # Let's add to graph but marked as proposed.
+            agent.graph.add_node(res.id, **res.model_dump())
+            
+        for edge in plan.add_edges:
+            # We need to track proposed edges too
+            agent.graph.add_edge(edge.source, edge.target, relation=edge.relation, status="proposed")
     
     confirmation = agent.needs_user_confirmation(plan)
     
@@ -140,6 +164,70 @@ def agent_plan_graph(req: PromptRequest):
         "confirmation": confirmation,
         "session_phase": agent.session.phase
     }
+
+@app.post("/agent/approve")
+def agent_approve():
+    """
+    Commits the pending plan to the active graph.
+    """
+    if not agent.session.pending_plan:
+        return {"status": "no_pending_plan", "message": "No plan waiting for approval."}
+    
+    # 1. Update statuses from 'proposed' to 'active' (or 'planned')
+    # Actually, apply_diff handles adding, but we already added them as 'proposed'.
+    # We just need to confirm them.
+    
+    plan = agent.session.pending_plan
+    
+    # Commit Proposed Resources
+    for res in plan.add_resources:
+        if agent.graph.has_node(res.id):
+            agent.graph.nodes[res.id]["status"] = "active"  # Mark as active after approval
+            
+    # Commit Proposed Edges
+    for edge in plan.add_edges:
+        if agent.graph.has_edge(edge.source, edge.target):
+             nx_edge = agent.graph[edge.source][edge.target]
+             if isinstance(nx_edge, dict):
+                 nx_edge.pop("status", None) # Remove 'proposed' status
+    
+    # Handle Removals (delayed until approval)
+    for res_id in plan.remove_resources:
+        if agent.graph.has_node(res_id):
+            agent.graph.remove_node(res_id)
+            
+    agent.session.pending_plan = None
+    agent.session.phase = "idle"
+    agent.save_state_to_disk()
+    
+    return {"status": "approved", "message": "Plan approved. Ready to deploy."}
+
+@app.post("/agent/reject")
+def agent_reject():
+    """
+    Rejects the pending plan and reverts 'proposed' changes.
+    """
+    if not agent.session.pending_plan:
+        return {"status": "no_pending_plan", "message": "No plan waiting for approval."}
+        
+    plan = agent.session.pending_plan
+    
+    # Revert Proposed Resources
+    for res in plan.add_resources:
+        if agent.graph.has_node(res.id) and agent.graph.nodes[res.id].get("status") == "proposed":
+            agent.graph.remove_node(res.id)
+            
+    # Revert Proposed Edges
+    for edge in plan.add_edges:
+        if agent.graph.has_edge(edge.source, edge.target):
+             # Check if it was proposed. Since edges don't have IDs, this is tricky.
+             # Heuristic: If we are rejecting, we just remove the edges added in the plan.
+             agent.graph.remove_edge(edge.source, edge.target)
+
+    agent.session.pending_plan = None
+    agent.session.phase = "idle"
+    
+    return {"status": "rejected", "message": "Plan rejected. Graph reverted."}
 
 class ExplainRequest(BaseModel):
     target_node_id: str
