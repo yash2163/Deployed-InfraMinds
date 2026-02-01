@@ -64,6 +64,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
     const [isInitialLoad, setIsInitialLoad] = useState(true);
     const [costReport, setCostReport] = useState<CostReport | null>(null);
     const [showCostModal, setShowCostModal] = useState(false);
+    const [lastCostHash, setLastCostHash] = useState<string>("");
 
     // Missing state variables restore
     const [affectedNodeIds, setAffectedNodeIds] = useState<Set<string>>(new Set());
@@ -82,18 +83,15 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
             setIsPendingApproval(hasProposed);
 
             // Fetch Cost
-            setNodes((currentNodes) => {
-                const nodeCountChanged = currentNodes.length !== state.resources.length;
-                const shouldFetch = nodeCountChanged || isInitialLoad;
+            // Calculate Hash for Cost Trigger
+            const currentHash = state.resources.map(r => r.id).sort().join(',');
 
-                if (shouldFetch) {
-                    fetchCost().then(setCostReport).catch(e => console.error(e));
-                    setIsInitialLoad(false);
-                }
-
-                // We just return current nodes here to not block the separate update
-                return currentNodes;
-            });
+            if (currentHash !== lastCostHash || isInitialLoad) {
+                console.log("Architecture changed (or initial load), fetching cost...");
+                fetchCost().then(setCostReport).catch(e => console.error(e));
+                setLastCostHash(currentHash);
+                setIsInitialLoad(false);
+            }
 
             // Process Data
             const rawNodes: Node[] = state.resources.map((res) => {
@@ -191,7 +189,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         } catch (error) {
             console.error("Failed to fetch graph", error);
         }
-    }, [affectedNodeIds, nodeStatuses, isInitialLoad, setNodes, setEdges]);
+    }, [affectedNodeIds, nodeStatuses, isInitialLoad, lastCostHash, setNodes, setEdges]);
 
     useEffect(() => {
         refreshGraph();

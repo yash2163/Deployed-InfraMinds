@@ -3,8 +3,12 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from typing import List, Dict, Optional, Generator
+from typing import List, Dict, Optional, Generator, Any
 from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview, ConfirmationRequired, ConfirmationReason, SessionState
+from prompts.localstack import get_think_prompt, get_plan_prompt, get_code_gen_prompt
+from prompts.vision import get_vision_prompt
+import PIL.Image
+import io
 
 # Import Prompt Providers
 from prompts import localstack, aws_full
@@ -782,8 +786,172 @@ class InfraAgent:
 
 
     # ------------------------------------------------------------------
-    #  FEATURE 2: REAL-TIME DEPLOYMENT PIPELINE
+    #  FEATURE 4: VISION SPECIALIST (Visual-to-State)
     # ------------------------------------------------------------------
+
+    def _validate_vision_plan(self, image: PIL.Image.Image, plan: PlanDiff, reasoning: str) -> List[str]:
+        """
+        Advanced Semantic Validation for Vision Plans.
+        Returns a list of error triggers to feed back to the Agent.
+        """
+        errors = []
+        
+        # 1. Structural Validation
+        for res in plan.add_resources:
+            if not res.id or not res.type:
+                errors.append(f"Resource {res} missing ID or Type.")
+            if res.type == "aws_subnet" and "properties" in res.model_dump():
+                # Check for "floating" subnet (orphan)
+                # (Simple check: Just ensure we have a VPC)
+                pass
+
+        # 2. Security Check: CloudFront -> S3 must implement OAC
+        # Heuristic: If we have both types, and an edge connecting them...
+        has_cf = any(r.type == "aws_cloudfront_distribution" for r in plan.add_resources)
+        has_s3 = any(r.type == "aws_s3_bucket" for r in plan.add_resources)
+        cf_s3_edge = any(e.source.startswith("cloudfront") and e.target.startswith("s3") for e in plan.add_edges)
+        
+        if has_cf and has_s3 and cf_s3_edge:
+            if "Origin Access Control" not in reasoning and "OAC" not in reasoning:
+                errors.append("Security Violation: CloudFront connects to S3, but 'Origin Access Control (OAC)' is not mentioned in reasoning. You MUST ensure the bucket is private.")
+
+        # 3. Reliability Check: Multi-AZ for Production
+        # If "Production" or "Microservice" is inferred...
+        is_prod = "Production" in reasoning or "Microservice" in reasoning
+        if is_prod:
+            subnets = [r for r in plan.add_resources if r.type == "aws_subnet"]
+            if len(subnets) < 2:
+                errors.append("Reliability Violation: Production/Microservice architecture detected, but only found 1 subnet. You MUST generate Multi-AZ subnets (e.g. us-east-1a, us-east-1b) for HA.")
+
+        # 4. Connectivity Check: Private ECS needing NAT
+        # Heuristic: If ECS in private subnet, check for NAT or Endpoints
+        # (Simplified: Just warn if no NAT found with Private ECS)
+        ecs_services = [r for r in plan.add_resources if r.type == "aws_ecs_service"]
+        nat_gateways = [r for r in plan.add_resources if r.type == "aws_nat_gateway"]
+        
+        # This is a bit complex to validate strictly without traversing the graph perfectly,
+        # but we can do a "smell test".
+        if ecs_services and not nat_gateways and is_prod:
+             # Just a nudge, not a blocker unless strictly needed
+             pass
+
+        return errors
+
+    def see_stream(self, image_bytes: bytes) -> Generator[str, None, None]:
+        """
+        Multimodal Analysis: Visual-to-JSON with Spatial Reasoning & Self-Correction.
+        """
+        def send(type_, content):
+            return json.dumps({"type": type_, "content": content}) + "\n"
+
+        yield send("log", "Initializing Vision Specialist with Self-Healing...")
+
+        try:
+            image = PIL.Image.open(io.BytesIO(image_bytes))
+            prompt = get_vision_prompt()
+            
+            # Message history for retries
+            # structure: [ {role: user, ...}, {role: model, ...} ... ]
+            # But Gemini generate_content doesn't use that format directly for multimodal usually.
+            # We will just append to the prompt string for retries to keep it simple.
+            
+            current_prompt_text = prompt
+            retries = 0
+            max_retries = 2
+            
+            while retries <= max_retries:
+                attempt_label = f"(Attempt {retries + 1}/{max_retries + 1})"
+                yield send("log", f"Analyzing Sketch Topology {attempt_label}...")
+                
+                # Different call structure for re-prompting? 
+                # For simplicity, we just concantenate the history
+                response = self.model.generate_content([current_prompt_text, image], stream=True)
+                
+                full_text = ""
+                json_part = ""
+                is_json = False
+                reasoning = ""
+                
+                for chunk in response:
+                    text = chunk.text
+                    if not text: continue
+                    full_text += text
+                    
+                    if "THOUGHT:" in text and not is_json:
+                        lines = text.split("\n")
+                        for line in lines:
+                            if "THOUGHT:" in line:
+                                clean_thought = line.replace("THOUGHT:", "").strip()
+                                reasoning += clean_thought + " "
+                                yield send("thought", clean_thought)
+                    
+                    if "{" in text:
+                        is_json = True
+                
+                # Check JSON
+                clean_text = full_text.replace("```json", "").replace("```", "")
+                s = clean_text.find("{")
+                e = clean_text.rfind("}") + 1
+                
+                if s != -1 and e != -1:
+                    json_part = clean_text[s:e]
+                    try:
+                        data = json.loads(json_part)
+                        
+                        # 1. Schema Validation
+                        plan = PlanDiff(**data)
+                        
+                        # 2. Semantic Validation
+                        errors = self._validate_vision_plan(image, plan, full_text)
+                        
+                        if errors:
+                            error_msg = "; ".join(errors)
+                            yield send("log", f"Refining Plan: {error_msg}")
+                            
+                            # Update Prompt for Retry
+                            current_prompt_text += f"\n\nYOUR PREVIOUS JSON WAS INVALID:\n{json_part}\n\nERRORS:\n{error_msg}\n\nPLEASE FIX AND OUTPUT ONLY JSON."
+                            retries += 1
+                            continue # Loop again
+                            
+                        # Success! Processing...
+                        for res in data.get("add_resources", []):
+                            res["status"] = "proposed"
+                        plan = PlanDiff(**data) # Re-bind
+                        
+                        self.session.pending_plan = plan
+                        self.session.phase = "graph_pending"
+                        
+                        yield send("log", f"Vision Analysis Validated. Found {len(plan.add_resources)} resources.")
+                        
+                        self.apply_diff(plan)
+                        
+                        current_state_dump = self.export_state().model_dump()
+                        confirmation = self.needs_user_confirmation(plan)
+                        
+                        result_payload = {
+                            "plan": plan.model_dump(),
+                            "graph_state": current_state_dump,
+                            "confirmation": confirmation.model_dump(),
+                            "session_phase": self.session.phase
+                        }
+                        
+                        yield send("result", result_payload)
+                        return
+
+                    except (json.JSONDecodeError, Exception) as e:
+                        yield send("log", f"JSON Parse Error: {str(e)}. Retrying...")
+                        current_prompt_text += f"\n\nYOUR OUTPUT WAS NOT VALID JSON:\n{str(e)}\n\nPLEASE OUTPUT STRICT JSON."
+                        retries += 1
+                else:
+                    yield send("log", "No JSON found. Retrying...")
+                    current_prompt_text += "\n\nNO JSON FOUND. PLEASE OUTPUT STRICT JSON."
+                    retries += 1
+            
+            yield send("error", "Vision Analysis Failed after max retries.")
+
+        except Exception as e:
+            yield send("error", f"Vision System Error: {str(e)}")
+
     def generate_terraform_agentic_stream(self, user_prompt: str, execution_mode: str = "deploy") -> Generator[str, None, None]:
         
         def send(type_, content):

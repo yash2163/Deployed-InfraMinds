@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -248,6 +248,18 @@ async def agent_deploy(request: PromptRequest):
     """
     return StreamingResponse(
         agent.generate_terraform_agentic_stream(request.prompt, request.execution_mode),
+        media_type="application/x-ndjson"
+    )
+
+@app.post("/agent/visualize")
+async def agent_visualize(file: UploadFile = File(...)):
+    """
+    Multimodal endpoint: Accepts an image, streams 'THOUGHT' logs,
+    and returns a proposed GraphState.
+    """
+    contents = await file.read()
+    return StreamingResponse(
+        agent.see_stream(contents),
         media_type="application/x-ndjson"
     )
 

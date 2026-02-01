@@ -223,3 +223,35 @@ export const streamAgentDeploy = async (
     }
   }
 };
+
+export const streamAgentVisualize = async (
+  file: File,
+  onChunk: (chunk: any) => void
+) => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_URL}/agent/visualize`, {
+    method: 'POST',
+    body: formData, // fetch automatically sets Content-Type to multipart/form-data
+  });
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};

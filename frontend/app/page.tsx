@@ -1,8 +1,10 @@
 "use client";
 
+import Link from 'next/link';
 import { useState, useRef, useEffect } from 'react';
 import GraphVisualizer from '../components/GraphVisualizer';
-import { api, simulateBlastRadius, explainBlastRadius } from '../lib/api';
+import { ImageUpload } from '../components/ImageUpload';
+import { api, simulateBlastRadius, explainBlastRadius, streamAgentVisualize } from '../lib/api';
 import { Terminal, Play, Cpu, ShieldAlert, Info, CheckCircle2, Circle, Loader2, XCircle, FileCode } from 'lucide-react';
 
 // --- UI Component: Pipeline Progress Bar ---
@@ -86,6 +88,42 @@ export default function Home() {
     setResponse(null);
     setDeploymentPhase('idle');
     window.location.reload();
+  };
+
+  const handleImageUpload = async (file: File) => {
+    setLoading(true);
+    setResponse(null);
+    setExecutionLogs([]);
+    setThoughts([]);
+
+    setExecutionLogs(["🚀 Uploading Sketch for Analysis..."]);
+
+    try {
+      await streamAgentVisualize(file, (chunk) => {
+        if (chunk.type === 'log') {
+          setExecutionLogs(prev => [...prev, chunk.content]);
+        } else if (chunk.type === 'thought') {
+          setThoughts(prev => [...prev, chunk.content]);
+        } else if (chunk.type === 'result') {
+          const planResult = chunk.content;
+          setDeploymentPhase('graph_pending');
+
+          setResponse({
+            summary: planResult.confirmation.message || "Visual Analysis Complete",
+            risks: planResult.confirmation.reasons?.map((r: any) => r.reason) || [],
+            explanation: "I've drafted a graph based on your sketch. Please review the 'Proposed' (Blue) nodes.",
+            mitigation: "Type CONFIRM to accept this design."
+          });
+        } else if (chunk.type === 'error') {
+          setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
+        }
+      });
+    } catch (e) {
+      console.error(e);
+      setExecutionLogs(prev => [...prev, "❌ Visualization Failed"]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -364,6 +402,11 @@ export default function Home() {
               </div>
             </div>
 
+
+
+            {/* Visual Input */}
+            <ImageUpload onImageSelected={handleImageUpload} isProcessing={loading} />
+
             <form onSubmit={handleSubmit} className="flex flex-col gap-3">
               <div className="relative">
                 <textarea
@@ -511,7 +554,7 @@ export default function Home() {
 
           </div>
         </div>
-      </div>
-    </main>
+      </div >
+    </main >
   );
 }
