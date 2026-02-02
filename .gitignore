@@ -41,5 +41,14 @@ build/
 frontend/node_modules/
 frontend/.next/
 
+
 # InfraMinds Specific
 .gemini/
+backend/graphs/
+backend/decision_log.json
+backend/session_meta.json
+backend/pending_graph.json
+backend/intent_graph.json
+backend/reasoned_graph.json
+backend/implementation_graph.json
+backend/debug_*.json

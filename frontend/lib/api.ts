@@ -45,6 +45,40 @@ export const approvePlan = async () => {
   return response.data;
 };
 
+export const approveIntentStream = async (executionMode: string, onChunk: (chunk: any) => void) => {
+  const response = await fetch(`${API_URL}/agent/approve/intent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: "APPROVE", execution_mode: executionMode }),
+  });
+  handleStream(response, onChunk);
+};
+
+// Obsolete approveReasonedStream removed.
+
+
+// Helper to avoid duplication
+const handleStream = async (response: Response, onChunk: (chunk: any) => void) => {
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};
+
 export const rejectPlan = async () => {
   const response = await api.post('/agent/reject');
   return response.data;
@@ -69,23 +103,25 @@ export const fetchCost = async (): Promise<CostReport> => {
   return response.data;
 };
 
-export interface GraphResource {
+export interface Resource {
   id: string;
   type: string;
   properties: Record<string, any>;
   status: 'planned' | 'active' | 'deleted' | 'proposed';
   description?: string;
+  parent_id?: string;
 }
 
-export interface GraphEdge {
+export interface Edge {
   source: string;
   target: string;
   relation: string;
 }
 
 export interface GraphState {
-  resources: GraphResource[];
-  edges: GraphEdge[];
+  graph_phase?: 'intent' | 'reasoned' | 'implementation'; // Added for Evolution Demo
+  resources: Resource[];
+  edges: Edge[];
 }
 
 export interface IntentAnalysis {
@@ -234,6 +270,71 @@ export const streamAgentVisualize = async (
   const response = await fetch(`${API_URL}/agent/visualize`, {
     method: 'POST',
     body: formData, // fetch automatically sets Content-Type to multipart/form-data
+  });
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};
+
+export const fetchSession = async (): Promise<any> => {
+  const response = await api.get('/agent/session');
+  return response.data;
+};
+
+export const modifyGraphStream = async (
+  prompt: string,
+  onChunk: (chunk: any) => void
+) => {
+  const response = await fetch(`${API_URL}/agent/modify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+
+  const reader = response.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        onChunk(data);
+      } catch (e) {
+        console.error('Error parsing chunk', e);
+      }
+    }
+  }
+};
+
+export const confirmGraphModification = async (
+  accept: boolean,
+  onChunk: (chunk: any) => void
+) => {
+  const response = await fetch(`${API_URL}/graph/confirm_change`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accept }),
   });
 
   const reader = response.body?.getReader();

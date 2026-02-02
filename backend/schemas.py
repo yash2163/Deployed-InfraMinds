@@ -1,20 +1,31 @@
 from typing import List, Dict, Optional, Literal, Any, Union
+import uuid
 from pydantic import BaseModel, Field
 
 class Resource(BaseModel):
     id: str = Field(..., description="Unique identifier for the resource (e.g., 'vpc-main')")
     type: str = Field(..., description="AWS Resource type (e.g., 'aws_vpc', 'aws_instance')")
     properties: Dict[str, Any] = Field(default_factory=dict, description="Configuration parameters")
-    status: Literal["planned", "active", "deleted", "proposed"] = "planned"
+    # --- NEW FIELD ---
+    parent_id: Optional[str] = Field(default=None, description="ID of the container resource (e.g., VPC or Subnet ID)")
+    # -----------------
+    status: str = "planned"  # Flexible to handle LLM output variance (graph_phase is the source of truth)
+    
+    # Add metadata for UI (to persist positions if needed)
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="UI positioning data")
 
 class Edge(BaseModel):
     source: str = Field(..., description="Source Resource ID")
     target: str = Field(..., description="Target Resource ID")
-    relation: str = Field(..., description="Type of relationship (e.g., 'contains', 'depends_on', 'connects_to')")
+    relation: str = Field(default="connects_to", description="Type of relationship (e.g., 'contains', 'depends_on', 'connects_to')")
 
 class GraphState(BaseModel):
+    graph_phase: Literal["intent", "reasoned", "implementation"] = "implementation"
+    graph_version: str = Field(default_factory=lambda: str(uuid.uuid4()))
     resources: List[Resource] = Field(default_factory=list)
     edges: List[Edge] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata like cost, version info")
+    reasoning: Optional[str] = Field(default=None, description="Explanation of the graph state or recent modifications")
 
 class IntentAnalysis(BaseModel):
     summary: str = Field(..., description="Summary of the user's architectural intent")
@@ -72,7 +83,8 @@ class ConfirmationRequired(BaseModel):
 
 class SessionState(BaseModel):
     """Tracks the current deployment workflow state"""
-    phase: Literal["idle", "graph_pending", "code_pending", "deploying"] = "idle"
+    phase: Literal["idle", "intent_review", "reasoned_review", "graph_pending", "code_pending", "deploying"] = "idle"
     pending_plan: Optional[PlanDiff] = None
+    pending_graph: Optional['GraphState'] = None # Used for interactive refinement (Diff -> Confirm)
     generated_code: Optional[str] = None
     test_script: Optional[str] = None

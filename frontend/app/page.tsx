@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useState, useRef, useEffect } from 'react';
 import GraphVisualizer from '../components/GraphVisualizer';
 import { ImageUpload } from '../components/ImageUpload';
-import { api, simulateBlastRadius, explainBlastRadius, streamAgentVisualize } from '../lib/api';
-import { Terminal, Play, Cpu, ShieldAlert, Info, CheckCircle2, Circle, Loader2, XCircle, FileCode } from 'lucide-react';
+import { api, simulateBlastRadius, explainBlastRadius, streamAgentVisualize, approveIntentStream, fetchSession, modifyGraphStream, confirmGraphModification } from '../lib/api';
+import { Terminal, Play, Cpu, ShieldAlert, Info, CheckCircle2, Circle, Loader2, XCircle, FileCode, Check, RefreshCw, Scale, ThumbsUp, ThumbsDown } from 'lucide-react';
 
 // --- UI Component: Pipeline Progress Bar ---
 const PipelineProgress = ({ stages }: { stages: any[] }) => {
@@ -54,13 +54,19 @@ export default function Home() {
   // Logic State
   const [response, setResponse] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [deploymentPhase, setDeploymentPhase] = useState<'idle' | 'graph_pending' | 'code_pending' | 'deploying'>('idle');
+  const [sessionPhase, setSessionPhase] = useState<'idle' | 'intent_review' | 'reasoned_review' | 'graph_pending' | 'deployed' | 'modification_review'>('idle');
+  // const [deploymentPhase, setDeploymentPhase] = useState<'idle' | 'graph_pending' | 'code_pending' | 'deploying'>('idle'); // REPLACED by sessionPhase
 
   // Streaming State (The "Glass Box")
   const [executionLogs, setExecutionLogs] = useState<string[]>([]);
   const [thoughts, setThoughts] = useState<string[]>([]);
+  const [decisions, setDecisions] = useState<any[]>([]); // New: Decisions Stream
   const [pipelineStages, setPipelineStages] = useState<any[]>([]);
   const [resourceStatuses, setResourceStatuses] = useState<Record<string, string>>({});
+
+  // Graph Evolution State
+  const [visualizedGraph, setVisualizedGraph] = useState<any>(null);
+  const [graphPhase, setGraphPhase] = useState<'intent' | 'reasoned' | 'implementation' | null>(null);
 
   // Code Viewer State
   const [showCode, setShowCode] = useState(false);
@@ -69,6 +75,7 @@ export default function Home() {
   // Auto-scroll for logs
   const logsEndRef = useRef<HTMLDivElement>(null);
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
+  const decisionsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -78,6 +85,38 @@ export default function Home() {
     thoughtsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [thoughts]);
 
+  useEffect(() => {
+    decisionsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [decisions]);
+
+  // --- RESTORE SESSION ON MOUNT ---
+  useEffect(() => {
+    const restore = async () => {
+      try {
+        const session = await fetchSession();
+        if (session.phase !== 'idle') {
+          setSessionPhase(session.phase);
+          // Restore Graph
+          if (session.implementation_graph) {
+            setVisualizedGraph(session.implementation_graph);
+            setGraphPhase("implementation"); // If implementation exists, show it
+          } else if (session.reasoned_graph) {
+            setVisualizedGraph(session.reasoned_graph);
+            setGraphPhase("reasoned");
+          } else if (session.intent_graph) {
+            setVisualizedGraph(session.intent_graph);
+            setGraphPhase("intent");
+          }
+
+          setExecutionLogs(["System: Session restored."]);
+        }
+      } catch (e) {
+        console.error("Failed to restore session", e);
+      }
+    };
+    restore();
+  }, []);
+
   const handleReset = async () => {
     if (!confirm("Reset entire graph?")) return;
     await api.post('/graph/reset');
@@ -85,9 +124,53 @@ export default function Home() {
     setExecutionLogs([]);
     setPipelineStages([]);
     setThoughts([]);
+    setDecisions([]);
     setResponse(null);
-    setDeploymentPhase('idle');
+    setSessionPhase('idle');
     window.location.reload();
+  };
+
+  const commonStreamHandler = (chunk: any) => {
+    if (chunk.type === 'log') {
+      setExecutionLogs(prev => [...prev, chunk.content]);
+    } else if (chunk.type === 'graph_snapshot') {
+      setVisualizedGraph(chunk.content);
+      setGraphPhase(chunk.content.graph_phase || 'implementation');
+    } else if (chunk.type === 'thought') {
+      setThoughts(prev => [...prev, chunk.content]);
+    } else if (chunk.type === 'decision') {
+      // New Decision Stream
+      setDecisions(prev => [...prev, chunk.content]);
+    } else if (chunk.type === 'control') {
+      // Backend tells us phase changed
+      if (chunk.content.next_phase === 'reasoning') setSessionPhase('intent_review');
+      if (chunk.content.next_phase === 'deployment') setSessionPhase('reasoned_review'); // Architecture Ready
+      if (chunk.content.next_phase === 'confirm_change') setSessionPhase('modification_review'); // HITL
+      setLoading(false);
+    } else if (chunk.type === 'result') {
+      const planResult = chunk.content;
+      if (planResult.session_phase === 'graph_pending') setSessionPhase('graph_pending');
+
+      setResponse({
+        summary: planResult.confirmation?.message || "Operation Complete",
+        risks: planResult.confirmation?.reasons?.map((r: any) => r.reason) || [],
+        explanation: "Process finished successfully.",
+        mitigation: "Ready for next step."
+      });
+    } else if (chunk.type === 'error') {
+      setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
+    } else if (chunk.type === 'stage') {
+      // Pipeline Stage
+      setPipelineStages(prev => {
+        const existingIndex = prev.findIndex(s => s.name === chunk.content.name);
+        if (existingIndex > -1) {
+          const updated = [...prev];
+          updated[existingIndex] = chunk.content;
+          return updated;
+        }
+        return [...prev, chunk.content];
+      });
+    }
   };
 
   const handleImageUpload = async (file: File) => {
@@ -95,29 +178,12 @@ export default function Home() {
     setResponse(null);
     setExecutionLogs([]);
     setThoughts([]);
-
-    setExecutionLogs(["🚀 Uploading Sketch for Analysis..."]);
+    setDecisions([]);
+    setExecutionLogs(["🚀 Uploading Sketch for Analysis (Unified Phase 1)..."]);
 
     try {
-      await streamAgentVisualize(file, (chunk) => {
-        if (chunk.type === 'log') {
-          setExecutionLogs(prev => [...prev, chunk.content]);
-        } else if (chunk.type === 'thought') {
-          setThoughts(prev => [...prev, chunk.content]);
-        } else if (chunk.type === 'result') {
-          const planResult = chunk.content;
-          setDeploymentPhase('graph_pending');
-
-          setResponse({
-            summary: planResult.confirmation.message || "Visual Analysis Complete",
-            risks: planResult.confirmation.reasons?.map((r: any) => r.reason) || [],
-            explanation: "I've drafted a graph based on your sketch. Please review the 'Proposed' (Blue) nodes.",
-            mitigation: "Type CONFIRM to accept this design."
-          });
-        } else if (chunk.type === 'error') {
-          setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
-        }
-      });
+      // Unified Stream Call
+      await streamAgentVisualize(file, commonStreamHandler);
     } catch (e) {
       console.error(e);
       setExecutionLogs(prev => [...prev, "❌ Visualization Failed"]);
@@ -132,25 +198,31 @@ export default function Home() {
 
     setLoading(true);
     setResponse(null);
-    setExecutionLogs([]);
     setThoughts([]);
+    setDecisions([]); // Clear decisions on new request
 
     try {
-      // Stream "Thinking" Process
-      await import('../lib/api').then(m => m.streamAgentThink(input, executionMode, (chunk) => {
-        if (chunk.type === 'thought') {
-          setThoughts(prev => [...prev, chunk.content]);
-        } else if (chunk.type === 'result') {
-          setResponse(chunk.payload);
-        } else if (chunk.type === 'error') {
-          setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
-        }
-      }));
+      // --- INTERACTIVE ROUTING ---
+      // If we are in a review phase, this is a REFINEMENT request
+      if (sessionPhase === 'intent_review' || sessionPhase === 'reasoned_review') {
+        setExecutionLogs(prev => [...prev, `🛠️ Refining Graph: "${input}"`]);
+        await modifyGraphStream(input, commonStreamHandler);
+      }
+      // Else if idle, it's a new Intent
+      else if (sessionPhase === 'idle') {
+        setExecutionLogs(prev => [...prev, `💡 New Intent: "${input}"`]);
+        await import('../lib/api').then(m => m.streamAgentThink(input, executionMode, commonStreamHandler));
+      }
+      // Else (graph_pending/deployed), maybe treat as new intent or context?
+      else {
+        alert("Please Reset or Deploy before starting a new intent.");
+      }
     } catch (err) {
       console.error(err);
       setExecutionLogs(prev => [...prev, "❌ Error reaching agent"]);
     } finally {
       setLoading(false);
+      setInput(''); // Clear input after submit
     }
   };
 
@@ -175,113 +247,69 @@ export default function Home() {
     }
   };
 
-  const handleExecute = async () => {
-    if (!input.trim()) return;
-    const userInput = input.trim();
-
-    // ---------------------------------------------------------
-    // Phase 2: User Confirmed -> Run Deployment Pipeline
-    // ---------------------------------------------------------
-    if (userInput.toUpperCase() === "CONFIRM") {
-      setLoading(true);
-      setPipelineStages([]); // Reset stages
-      setThoughts([]); // Clear previous thoughts
-      setDeploymentPhase('deploying');
-
-      try {
-        await import('../lib/api').then(m => m.streamAgentDeploy("CONFIRM", executionMode, (chunk) => {
-
-          if (chunk.type === 'log') {
-            setExecutionLogs(prev => [...prev, chunk.content]);
-          } else if (chunk.type === 'thought') {
-            // Visualize Code Generation Thoughts (Drafting Phase)
-            setThoughts(prev => [...prev, chunk.content]);
-          } else if (chunk.type === 'stage') {
-            // Update Pipeline Visualizer
-            setPipelineStages(prev => {
-              const existingIndex = prev.findIndex(s => s.name === chunk.content.name);
-              if (existingIndex > -1) {
-                const updated = [...prev];
-                updated[existingIndex] = chunk.content;
-                return updated;
-              }
-              return [...prev, chunk.content];
-            });
-          } else if (chunk.type === 'resource_update') {
-            // ✨ REAL TIME GREEN LIGHTS ✨
-            setResourceStatuses(prev => ({ ...prev, ...chunk.content }));
-          } else if (chunk.type === 'result') {
-            const result = chunk.content;
-            if (result.success) {
-              setDeploymentPhase('idle');
-              setTfCode(result.hcl_code);
-              setResponse({
-                summary: "Deployment Complete!",
-                explanation: result.final_message
-              });
-              setInput('');
-            }
-          } else if (chunk.type === 'error') {
-            setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
-          }
-        }));
-      } catch (e) {
-        console.error(e);
-        setExecutionLogs(prev => [...prev, "❌ Connection Error"]);
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-
-    // ---------------------------------------------------------
-    // Phase 1: Planning (Generate Graph) - STREAMING
-    // ---------------------------------------------------------
+  // --- TRANSITION HANDLERS ---
+  const handleApprove = async () => {
     setLoading(true);
-    setResponse(null);
-    setExecutionLogs([]);
-    setThoughts([]); // Clear old thoughts
-
     try {
-      // Use streamPlanGraph instead of planGraph
-      await import('../lib/api').then(m => m.streamPlanGraph(userInput, executionMode, (chunk) => {
+      if (sessionPhase === 'intent_review') {
+        await approveIntentStream(executionMode, commonStreamHandler);
+      } else if (sessionPhase === 'reasoned_review') {
+        // UNIFIED DEPLOYMENT FLOW: Architecture -> Code
+        // User approved the Architecture. Now we generate code & deploy.
+        setPipelineStages([]);
+        setDecisions([]); // Clear decisions as we might get Terraform Validation Decisions
 
-        if (chunk.type === 'log') {
-          // Stream logs to the terminal window
-          setExecutionLogs(prev => [...prev, chunk.content]);
-        }
-        else if (chunk.type === 'thought') {
-          // Stream AI reasoning to the "Brain" window
-          setThoughts(prev => [...prev, chunk.content]);
-        }
-        else if (chunk.type === 'result') {
-          // Final Plan Received
-          const planResult = chunk.content;
-
-          setDeploymentPhase('graph_pending');
-
-          setResponse({
-            summary: planResult.confirmation.message || "Graph Plan Generated",
-            risks: planResult.confirmation.reasons?.map((r: any) => r.reason) || [],
-            explanation: "Review the graph on the left. The infrastructure matches your request.",
-            mitigation: planResult.confirmation.required
-              ? "If this looks correct, type CONFIRM to generate Terraform code."
-              : "Type CONFIRM to proceed with code generation."
-          });
-        }
-        else if (chunk.type === 'error') {
-          setExecutionLogs(prev => [...prev, `❌ ${chunk.content}`]);
-        }
-      }));
-
+        await import('../lib/api').then(m => m.streamAgentDeploy("DEPLOY", executionMode, (chunk) => {
+          // Custom handler for Deploy as it returns different "result" shape
+          if (chunk.type === 'result' && chunk.content.success) {
+            setTfCode(chunk.content.hcl_code);
+            setSessionPhase('deployed');
+            setResponse({ summary: "Deployment Complete!", explanation: chunk.content.final_message });
+          }
+          commonStreamHandler(chunk);
+        }));
+      } else if (sessionPhase === 'graph_pending') {
+        // This case might be skipped now as we go directly to code, but kept for safety
+        setPipelineStages([]);
+        await import('../lib/api').then(m => m.streamAgentDeploy("DEPLOY", executionMode, (chunk) => {
+          if (chunk.type === 'result' && chunk.content.success) {
+            setTfCode(chunk.content.hcl_code);
+            setSessionPhase('deployed');
+          }
+          commonStreamHandler(chunk);
+        }));
+      }
     } catch (e) {
       console.error(e);
-      setExecutionLogs(["❌ Failed to generate plan"]);
-      setDeploymentPhase('idle');
+      setExecutionLogs(prev => [...prev, "❌ Approval Failed"]);
     } finally {
       setLoading(false);
     }
   };
+
+  // --- NEW: MODIFICATION CONFIRMATION (HITL) ---
+  const handleConfirmModification = async (accept: boolean) => {
+    setLoading(true);
+    try {
+      // Stream the result of the confirmation (which runs stabilization)
+      await confirmGraphModification(accept, commonStreamHandler);
+      // If discarded, we should probably reset phase to 'reasoned_review'
+      // If accepted, we also go to 'reasoned_review' (after stabilization)
+      // The commonStreamHandler logic handles the actual "reasoned_review" state transition via Control messages?
+      // Actually backend sends: Phase 2: Architecture -> success -> control.next_phase = deployment
+      // So commonStreamHandler will set 'reasoned_review' automatically if accepted.
+      // If discarded, we revert. The backend just sends snapshot. We manually need to set phase back.
+      if (!accept) {
+        setSessionPhase('reasoned_review'); // Go back to review
+      }
+    } catch (e) {
+      console.error(e);
+      setExecutionLogs(prev => [...prev, "❌ Confirmation Error"]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
   const handleViewCode = async () => {
     if (tfCode) {
@@ -325,7 +353,7 @@ export default function Home() {
             <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">InfraMinds</h1>
             <div className="flex items-center gap-2">
               <span className="text-[10px] bg-blue-900/50 text-blue-200 px-2 py-0.5 rounded border border-blue-800">ALPHA</span>
-              <span className="text-[10px] text-slate-500">v0.9.2</span>
+              <span className="text-[10px] text-slate-500">v0.9.5 Hardened</span>
             </div>
           </div>
         </div>
@@ -370,7 +398,64 @@ export default function Home() {
 
           <div className="w-full h-full p-4">
             {/* Graph Visualizer gets the live statuses to update colors */}
-            <GraphVisualizer onNodeSelected={handleNodeSelected} nodeStatuses={resourceStatuses} />
+            <GraphVisualizer
+              onNodeSelected={handleNodeSelected}
+              nodeStatuses={resourceStatuses}
+              overrideGraph={visualizedGraph}
+            />
+
+            {/* Phase Indicator Overlay */}
+            {graphPhase && (
+              <div className="absolute top-6 right-6 z-10 bg-slate-900/90 backdrop-blur p-3 rounded-lg border border-slate-700 shadow-xl flex flex-col gap-1 items-end">
+                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Evolution Phase</span>
+                <span className={`text-sm font-bold capitalize ${graphPhase === 'intent' ? 'text-purple-400' :
+                  graphPhase === 'reasoned' ? 'text-blue-400' :
+                    'text-emerald-400'
+                  }`}>
+                  {graphPhase}
+                </span>
+                {sessionPhase.includes("review") && <span className="text-[10px] text-amber-500 animate-pulse">Waiting for Approval / Refinement</span>}
+              </div>
+            )}
+
+            {/* APPROVAL OVERLAY - PRIMARY ACTION */}
+            {(sessionPhase === 'intent_review' || sessionPhase === 'reasoned_review' || sessionPhase === 'graph_pending') && (
+              <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 zoom-in-95 duration-300">
+                <button
+                  onClick={handleApprove}
+                  disabled={loading}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-full font-bold shadow-xl shadow-emerald-500/20 flex items-center gap-2 border border-emerald-400/50 hover:scale-105 transition-all text-sm disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
+                >
+                  {loading ? <Loader2 className="animate-spin w-4 h-4" /> : <CheckCircle2 size={18} />}
+
+                  {sessionPhase === 'intent_review' && "Approve Intent → Architecture"}
+                  {sessionPhase === 'reasoned_review' && "Approve Architecture → Deploy"}
+                  {(sessionPhase === 'graph_pending') && "Deploy to Cloud 🚀"}
+                </button>
+              </div>
+            )}
+
+            {/* CONFIRMATION OVERLAY (HITL) */}
+            {sessionPhase === 'modification_review' && (
+              <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 zoom-in-95 duration-300 flex gap-4">
+                <button
+                  onClick={() => handleConfirmModification(true)}
+                  disabled={loading}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-full font-bold shadow-xl flex items-center gap-2 border border-emerald-400/50 hover:scale-105 transition-all text-sm"
+                >
+                  {loading ? <Loader2 className="animate-spin w-4 h-4" /> : <ThumbsUp size={18} />}
+                  Confirm Changes
+                </button>
+                <button
+                  onClick={() => handleConfirmModification(false)}
+                  disabled={loading}
+                  className="bg-slate-700 hover:bg-red-900/50 hover:text-red-400 text-slate-200 px-6 py-3 rounded-full font-bold shadow-xl flex items-center gap-2 border border-slate-600 hover:scale-105 transition-all text-sm"
+                >
+                  <ThumbsDown size={18} />
+                  Discard
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -402,8 +487,6 @@ export default function Home() {
               </div>
             </div>
 
-
-
             {/* Visual Input */}
             <ImageUpload onImageSelected={handleImageUpload} isProcessing={loading} />
 
@@ -412,9 +495,12 @@ export default function Home() {
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder={executionMode === 'deploy'
-                    ? "e.g., Deploy a high availability web cluster with 2 t2.micro instances..."
-                    : "e.g., Design a global architecture with EKS, RDS Aurora, and CloudFront..."}
+                  placeholder={
+                    sessionPhase === 'idle' ? "Design a cloud system (e.g. 'Highly available VPC')..." :
+                      sessionPhase.includes('review') ? "Refine the design (e.g. 'Add a Redis cache')..." :
+                        sessionPhase === 'modification_review' ? "Review proposed changes..." :
+                          "System deployed."
+                  }
                   className="w-full h-28 bg-slate-950 border border-slate-800 rounded-lg p-4 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 focus:outline-none resize-none placeholder:text-slate-600 leading-relaxed"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
@@ -422,7 +508,23 @@ export default function Home() {
                       handleSubmit(e);
                     }
                   }}
+                  disabled={loading || sessionPhase === 'deployed' || sessionPhase === 'modification_review'}
                 />
+
+                {sessionPhase.includes('review') && (
+                  <div className="absolute top-2 right-2 flex items-center gap-1 bg-amber-500/10 text-amber-500 text-[10px] px-2 py-0.5 rounded border border-amber-500/20">
+                    <RefreshCw className="w-3 h-3" /> Refinement Mode
+                  </div>
+                )}
+
+                {sessionPhase === 'modification_review' && (
+                  <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-[1px] rounded-lg flex items-center justify-center">
+                    <span className="text-xs font-bold text-amber-400 bg-amber-900/20 px-3 py-1 rounded-full border border-amber-500/30 animate-pulse">
+                      Waiting for Confirmation
+                    </span>
+                  </div>
+                )}
+
                 <div className="absolute bottom-3 right-3 text-[10px] text-slate-600">
                   {executionMode === 'deploy' ? 'LocalStack Mode' : 'Planning Mode'}
                 </div>
@@ -430,24 +532,19 @@ export default function Home() {
 
               <div className="flex gap-2">
                 <button
-                  disabled={loading}
+                  disabled={loading || sessionPhase === 'deployed' || sessionPhase === 'modification_review'}
                   type="submit"
-                  className="flex-1 flex justify-center items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg py-2.5 text-xs font-bold transition-all disabled:opacity-50"
+                  className="w-full flex justify-center items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg py-2.5 text-xs font-bold transition-all disabled:opacity-50"
                 >
-                  {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Terminal className="w-3 h-3" />}
-                  ANALYZE
-                </button>
-                <button
-                  type="button"
-                  onClick={handleExecute}
-                  disabled={loading}
-                  className="flex-1 flex justify-center items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2.5 text-xs font-bold transition-all shadow-lg shadow-blue-600/20 disabled:opacity-50"
-                >
-                  {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3 fill-current" />}
-                  {deploymentPhase === 'idle' ? 'PLAN' :
-                    deploymentPhase === 'graph_pending' ? 'CONFIRM' :
-                      deploymentPhase === 'code_pending' ? 'DEPLOY' :
-                        'DEPLOYING...'}
+                  {loading ? <Loader2 className="w-3 h-3 animate-spin" /> :
+                    sessionPhase.includes('review') ? <RefreshCw className="w-3 h-3" /> :
+                      <Terminal className="w-3 h-3" />
+                  }
+                  {loading ? "PROCESSING..." :
+                    sessionPhase === 'idle' ? "START DESIGN" :
+                      sessionPhase.includes('review') ? "REFINE GRAPH" :
+                        "SEND"
+                  }
                 </button>
               </div>
             </form>
@@ -467,14 +564,43 @@ export default function Home() {
               </div>
             )}
 
-            {/* B. Internal Thoughts (The "Brain") */}
+            {/* B. Decisions Stream (Pinned) */}
+            {decisions.length > 0 && (
+              <div className="bg-slate-900/80 rounded-lg border border-indigo-500/30 overflow-hidden shadow-lg animate-in zoom-in-95 duration-300">
+                <div className="bg-indigo-900/20 px-3 py-2 border-b border-indigo-500/20 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Scale className="w-3 h-3 text-indigo-400" />
+                    <span className="text-[10px] font-bold text-indigo-200 uppercase tracking-wider">Policy Decisions</span>
+                  </div>
+                  <span className="text-[10px] text-indigo-400 font-mono">{decisions.length}</span>
+                </div>
+                <div className="p-2 max-h-48 overflow-y-auto space-y-2 bg-[#0a0c10]">
+                  {decisions.map((d, i) => (
+                    <div key={i} className="flex flex-col gap-1 p-2 bg-slate-900 rounded border border-slate-800 text-[10px]">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 font-bold">{d.trigger || d.rule}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${d.action === 'allowed' ? 'bg-emerald-900/30 text-emerald-400' :
+                          d.action === 'modified' ? 'bg-amber-900/30 text-amber-400' : 'bg-red-900/30 text-red-400'
+                          }`}>
+                          {d.action}
+                        </span>
+                      </div>
+                      <div className="text-slate-500">{d.result || d.modification}</div>
+                    </div>
+                  ))}
+                  <div ref={decisionsEndRef} />
+                </div>
+              </div>
+            )}
+
+            {/* C. Internal Thoughts (The "Brain") */}
             {thoughts.length > 0 && (
               <div className="bg-slate-950 rounded-lg border border-slate-800 overflow-hidden shadow-sm animate-in fade-in duration-300">
                 <div className="bg-slate-900/50 px-3 py-2 border-b border-slate-800 flex items-center gap-2">
                   <Cpu className="w-3 h-3 text-purple-400" />
                   <span className="text-[10px] font-bold text-purple-200 uppercase tracking-wider">Agent Reasoning</span>
                 </div>
-                <div className="p-3 text-[10px] text-slate-400 font-mono space-y-1.5 max-h-40 overflow-y-auto">
+                <div className="p-3 text-[10px] text-slate-400 font-mono space-y-1.5 max-h-32 overflow-y-auto">
                   {thoughts.map((t, i) => (
                     <div key={i} className="flex gap-2 animate-in slide-in-from-left-2 duration-100">
                       <span className="text-slate-600 shrink-0 select-none">›</span>
@@ -486,7 +612,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* C. Response Card (Intent Analysis) */}
+            {/* D. Response Card (Intent Analysis) */}
             {response && !loading && (
               <div className="space-y-3 animate-in zoom-in-95 duration-200">
                 <div className="bg-slate-800/40 p-4 rounded-lg border border-slate-700/50">
@@ -522,7 +648,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* D. Execution Terminal Logs */}
+            {/* E. Execution Terminal Logs */}
             {executionLogs.length > 0 && (
               <div>
                 <h3 className="text-[10px] uppercase font-bold text-slate-500 mb-2">System Logs</h3>

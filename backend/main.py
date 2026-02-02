@@ -241,25 +241,77 @@ def simulate_explain(req: ExplainRequest):
     """
     return agent.explain_impact(req.target_node_id, req.affected_nodes)
 
-@app.post("/agent/deploy")
-async def agent_deploy(request: PromptRequest):
+@app.post("/agent/modify")
+async def agent_modify(request: PromptRequest):
     """
-    Generates and Deploys Code. Returns a stream of stages/logs + final result.
+    CRITICAL: Interactive Refinement.
+    Modifies the CURRENT graph phase based on user feedback.
     """
+    if agent.session.phase == "idle":
+        raise HTTPException(400, "No active session to modify.")
+        
     return StreamingResponse(
-        agent.generate_terraform_agentic_stream(request.prompt, request.execution_mode),
+        agent.modify_graph_stream(request.prompt),
         media_type="application/x-ndjson"
     )
+
+class ConfirmRequest(BaseModel):
+    accept: bool
+
+@app.post("/graph/confirm_change")
+async def confirm_change(req: ConfirmRequest):
+    """
+    Phase 2.5: Interactive Confirmation.
+    Accepts or Discards the pending graph modification.
+    """
+    if not agent.session.pending_graph:
+         raise HTTPException(400, "No pending modification to confirm.")
+
+    return StreamingResponse(
+        agent.confirm_modification_stream(req.accept),
+        media_type="application/x-ndjson"
+    )
+
+@app.get("/agent/session")
+def get_session():
+    """Restores session state for frontend recovery."""
+    return {
+        "phase": agent.session.phase,
+        "intent_graph": agent.intent_graph.model_dump() if agent.intent_graph else None,
+        "reasoned_graph": agent.reasoned_graph.model_dump() if agent.reasoned_graph else None,
+        "implementation_graph": agent.export_state().model_dump() if agent.graph.number_of_nodes() > 0 else None, # NetworkX is truth for implementation
+        "history": agent.history
+    }
 
 @app.post("/agent/visualize")
 async def agent_visualize(file: UploadFile = File(...)):
     """
-    Multimodal endpoint: Accepts an image, streams 'THOUGHT' logs,
-    and returns a proposed GraphState.
+    Unified Entry: Image -> Intent.
     """
     contents = await file.read()
     return StreamingResponse(
-        agent.see_stream(contents),
+        agent.generate_intent_stream(contents),
+        media_type="application/x-ndjson"
+    )
+
+@app.post("/agent/approve/intent")
+async def approve_intent(request: PromptRequest):
+    """Triggers Phase 2: Unified Reasoned Expansion (Intent -> Policies -> Verify -> Architecture)."""
+    if not agent.intent_graph:
+        raise HTTPException(400, "No Intent Graph to approve.")
+    
+    return StreamingResponse(
+        agent.stream_expanded_architecture(execution_mode=request.execution_mode),
+        media_type="application/x-ndjson"
+    )
+
+@app.post("/agent/deploy")
+async def agent_deploy(request: PromptRequest):
+    """
+    Phase 3: Code Generation & Deployment.
+    """
+    return StreamingResponse(
+        agent.stream_terraform_gen(request.prompt, request.execution_mode),
         media_type="application/x-ndjson"
     )
 

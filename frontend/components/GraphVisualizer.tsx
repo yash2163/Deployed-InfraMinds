@@ -54,9 +54,10 @@ interface GraphVisualizerProps {
     onNodeSelected?: (nodeId: string) => void;
     nodeStatuses?: Record<string, string>;
     terraformCode?: string | null;
+    overrideGraph?: GraphState | null; // For Streaming Visualization
 }
 
-export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terraformCode }: GraphVisualizerProps) {
+export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terraformCode, overrideGraph }: GraphVisualizerProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
     const [showCode, setShowCode] = useState(false);
@@ -72,10 +73,14 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
     const [isProcessing, setIsProcessing] = useState(false);
 
     // Poll for graph updates
-    // Poll for graph updates
     const refreshGraph = useCallback(async () => {
         try {
-            const state = await fetchGraph();
+            let state = overrideGraph; // Default to override if exists
+
+            if (!state) {
+                state = await fetchGraph();
+            }
+
             if (!state) return;
 
             // Check for pending approval (proposed status only)
@@ -98,6 +103,9 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 const isAffected = affectedNodeIds.has(res.id);
                 const verificationStatus = nodeStatuses ? nodeStatuses[res.id] : undefined;
 
+                // Group Detection
+                const isGroup = ['aws_vpc', 'network_container', 'aws_subnet', 'network_zone', 'aws_security_group'].includes(res.type);
+
                 let bgColor = res.status === 'planned' ? '#fff7ed' : '#fff';
                 let borderColor = res.status === 'planned' ? '2px dashed #f59e0b' : '1px solid #777';
 
@@ -112,18 +120,35 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                     borderColor = '2px solid #ef4444';
                 }
 
+                // Phase-based Styling
+                if (state.graph_phase === 'intent') {
+                    bgColor = '#f3e8ff';
+                    borderColor = '2px dashed #a855f7';
+                } else if (state.graph_phase === 'reasoned') {
+                    bgColor = '#e0f2fe';
+                    borderColor = '2px solid #0ea5e9';
+                }
+
                 if (res.status === 'proposed') {
-                    bgColor = '#eff6ff'; // blue-50
+                    bgColor = '#eff6ff';
                     borderColor = '2px dashed #3b82f6';
                 }
 
-                // We need to access current position. 
-                // Since we are outside setNodes, we can't access 'currentNodes' easily without dependency.
-                // However, we can use a functional update pattern for the FINAL setNodes call.
+                // Group Styling Overrides
+                if (isGroup) {
+                    bgColor = 'rgba(240, 249, 255, 0.05)'; // Very transparent blue
+                    borderColor = '2px dashed rgba(59, 130, 246, 0.3)';
+                }
+
                 return {
                     id: res.id,
+                    // --- PARENT MAPPING ---
+                    // REVERTED: User reported issue with nodes merging/getting stuck.
+                    // parentNode: res.parent_id ? res.parent_id : undefined,
+                    // extent: 'parent',
+                    // ----------------------
                     data: {
-                        label: `${res.type}\n${res.id}`,
+                        label: isGroup ? res.id : `${res.type}\n${res.id}`,
                         status: res.status,
                         type: res.type,
                         id: res.id,
@@ -133,17 +158,21 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                     style: {
                         background: bgColor,
                         border: borderColor,
-                        width: 150,
-                        color: isAffected ? 'red' : 'black',
-                        fontSize: '12px',
+                        width: isGroup ? undefined : 150, // Let groups auto-size or be handled by layout
+                        minWidth: isGroup ? 400 : 150,
+                        minHeight: isGroup ? 300 : 80,
+                        opacity: isGroup ? 0.9 : 1, // Groups slightly transparent
+                        color: isAffected ? 'red' : ((isGroup) ? '#64748b' : 'black'),
+                        fontSize: isGroup ? '14px' : '12px',
                         fontWeight: 'bold',
-                        boxShadow: '0px 4px 6px rgba(0,0,0,0.1)',
+                        boxShadow: isGroup ? 'none' : '0px 4px 6px rgba(0,0,0,0.1)',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
-                        padding: '10px'
+                        padding: '10px',
+                        zIndex: isGroup ? -1 : 1, // Groups behind
                     },
-                    position: { x: 0, y: 0 } // Placeholder, will be merged
+                    position: { x: 0, y: 0 }
                 };
             });
 
@@ -189,13 +218,17 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         } catch (error) {
             console.error("Failed to fetch graph", error);
         }
-    }, [affectedNodeIds, nodeStatuses, isInitialLoad, lastCostHash, setNodes, setEdges]);
+    }, [affectedNodeIds, nodeStatuses, isInitialLoad, lastCostHash, setNodes, setEdges, overrideGraph]);
 
     useEffect(() => {
         refreshGraph();
-        const interval = setInterval(refreshGraph, 5000); // Poll every 5s
-        return () => clearInterval(interval);
-    }, [refreshGraph]);
+
+        // Only poll if NOT in override mode
+        if (!overrideGraph) {
+            const interval = setInterval(refreshGraph, 5000); // Poll every 5s
+            return () => clearInterval(interval);
+        }
+    }, [refreshGraph, overrideGraph]);
 
     // Context Menu State
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, id: string, type: 'node' | 'edge' } | null>(null);
@@ -333,8 +366,8 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 </div>
             )}
 
-            {/* Pending Approval Banner */}
-            {
+            {/* Pending Approval Banner (Legacy - Disabled for Unified Workflow) */}
+            {/*
                 isPendingApproval && (
                     <div style={{
                         position: 'absolute',
@@ -393,7 +426,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                         </div>
                     </div>
                 )
-            }
+            */}
 
             {/* Cost Badge */}
             {costReport && (
