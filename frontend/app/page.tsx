@@ -108,6 +108,9 @@ export default function Home() {
             setGraphPhase("intent");
           }
 
+          if (session.execution_mode) {
+            setExecutionMode(session.execution_mode as 'deploy' | 'draft');
+          }
           setExecutionLogs(["System: Session restored."]);
         }
       } catch (e) {
@@ -476,13 +479,13 @@ export default function Home() {
                   onClick={() => setExecutionMode('deploy')}
                   className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${executionMode === 'deploy' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/50' : 'text-slate-500 hover:text-slate-300'}`}
                 >
-                  REAL
+                  LocalStack
                 </button>
                 <button
                   onClick={() => setExecutionMode('draft')}
                   className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${executionMode === 'draft' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-500 hover:text-slate-300'}`}
                 >
-                  DRAFT
+                  AWS Cloud
                 </button>
               </div>
             </div>
@@ -526,7 +529,7 @@ export default function Home() {
                 )}
 
                 <div className="absolute bottom-3 right-3 text-[10px] text-slate-600">
-                  {executionMode === 'deploy' ? 'LocalStack Mode' : 'Planning Mode'}
+                  {executionMode === 'deploy' ? 'LocalStack Mode' : 'AWS Cloud Planning Mode'}
                 </div>
               </div>
 

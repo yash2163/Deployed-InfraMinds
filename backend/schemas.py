@@ -83,8 +83,10 @@ class ConfirmationRequired(BaseModel):
 
 class SessionState(BaseModel):
     """Tracks the current deployment workflow state"""
-    phase: Literal["idle", "intent_review", "reasoned_review", "graph_pending", "code_pending", "deploying"] = "idle"
+    phase: Literal["idle", "intent_review", "reasoned_review", "graph_pending", "code_pending", "deployed"] = "idle"
     pending_plan: Optional[PlanDiff] = None
     pending_graph: Optional['GraphState'] = None # Used for interactive refinement (Diff -> Confirm)
     generated_code: Optional[str] = None
     test_script: Optional[str] = None
+    execution_mode: Literal["deploy", "draft"] = "deploy"
+    simulate_pipeline: bool = True

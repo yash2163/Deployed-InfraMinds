@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = 'http://127.0.0.1:8001';
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -137,6 +137,11 @@ export const fetchGraph = async (): Promise<GraphState> => {
 
 export const sendPrompt = async (prompt: string, executionMode: string = "deploy"): Promise<IntentAnalysis> => {
   const response = await api.post<IntentAnalysis>('/agent/think', { prompt, execution_mode: executionMode });
+  return response.data;
+};
+
+export const generateGraphLayout = async (): Promise<any> => {
+  const response = await api.post('/agent/layout', { prompt: "LAYOUT", execution_mode: "deploy" });
   return response.data;
 };
 

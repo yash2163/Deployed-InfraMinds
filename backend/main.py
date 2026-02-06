@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -8,6 +8,7 @@ import asyncio
 from agent import InfraAgent
 from schemas import GraphState, PlanDiff, IntentAnalysis, BlastAnalysis, PipelineResult
 from cost import CostEstimator, CostReport
+from layout_agent import generate_layout_plan
 
 app = FastAPI(title="InfraMinds Agent Core")
 
@@ -34,7 +35,7 @@ async def agent_deploy(request: PromptRequest):
     Streaming Endpoint for Real-Time UI Updates.
     """
     return StreamingResponse(
-        agent.generate_terraform_agentic_stream(request.prompt, request.execution_mode),
+        agent.stream_terraform_gen(request.prompt, request.execution_mode),
         media_type="application/x-ndjson"
     )
 
@@ -164,6 +165,10 @@ def agent_plan_graph(req: PromptRequest):
         "confirmation": confirmation,
         "session_phase": agent.session.phase
     }
+
+@app.get("/agent/health")
+def agent_health():
+    return {"status": "ok", "version": "debug_v1"}
 
 @app.post("/agent/approve")
 def agent_approve():
@@ -310,8 +315,42 @@ async def agent_deploy(request: PromptRequest):
     """
     Phase 3: Code Generation & Deployment.
     """
-    return StreamingResponse(
-        agent.stream_terraform_gen(request.prompt, request.execution_mode),
-        media_type="application/x-ndjson"
-    )
+    async def wrapper():
+        try:
+            # Note: stream_terraform_gen is synchronous, so we iterate it synchronously
+            # But inside an async wrapper, this blocks the loop? 
+            # Ideally run in threadpool, but for debug let's run direct.
+            # Or use sync wrapper? 
+            # Let's use sync wrapper logic if StreamingResponse supports it nicely?
+            # Actually, let's keep it simple.
+            # gen = agent.stream_terraform_gen(request.prompt, request.execution_mode)
+            # for chunk in gen:
+            #    yield chunk
+            yield json.dumps({"type": "log", "content": "DEBUG STATIC"}) + "\n"
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield json.dumps({"type": "error", "content": f"WRAPPER CAUGHT: {str(e)}"}) + "\n"
+
+    try:
+        return StreamingResponse(
+            wrapper(),
+            media_type="application/x-ndjson"
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Setup Error: {str(e)}"})
+
+@app.post("/agent/layout")
+async def agent_layout(req: PromptRequest):
+    """
+    Experimental: Uses Gemini to calculate a 'LucidChart-Style' Layout Plan.
+    Returns: JSON Map of { node_id: { x, y, width, height, parentId } }
+    """
+    # 1. Get current graph state
+    current_state = agent.export_state().model_dump()
+    
+    # 2. Ask Gemini for layout coordinates
+    layout_map = await generate_layout_plan(current_state)
+    
+    return layout_map
 

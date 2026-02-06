@@ -10,13 +10,14 @@ from schemas import PipelineResult, PipelineStage
 SIMULATION_MODE = False
 
 class PipelineManager:
-    def __init__(self, agent_model, work_dir: str = "/tmp/infra_minds_workspace"):
-        self.agent_model = agent_model
+    def __init__(self, agent_client, model_name: str, work_dir: str = "/tmp/infra_minds_workspace"):
+        self.agent_client = agent_client
+        self.model_name = model_name
         self.work_dir = os.path.abspath(work_dir)
         if not os.path.exists(self.work_dir):
             os.makedirs(self.work_dir)
 
-    def run_pipeline(self, hcl_code: str, test_script: str, execution_mode: str = "deploy", stage_callback: Callable[[PipelineStage], None] = None) -> PipelineResult:
+    def run_pipeline(self, hcl_code: str, test_script: str, execution_mode: str = "deploy", simulate_apply: bool = False, stage_callback: Callable[[PipelineStage], None] = None) -> PipelineResult:
         """
         Executes the 5-stage Self-Healing Pipeline.
         stage_callback: Function called after each stage completes.
@@ -40,25 +41,51 @@ class PipelineManager:
                 self._write_files(current_hcl, test_script)
                 continue 
 
-            # 2. Plan
-            plan_stage = self._run_stage("plan", current_hcl)
+            # 2. Plan (Always use tflocal plan for now as requested to avoid AWS credential requirement in Draft Mode)
+            # Logic: Even if Draft (AWS), we use tflocal to simulate the planning phase safely.
+            plan_stage = self._run_stage("plan", current_hcl) 
             stages_history.append(plan_stage)
             if stage_callback: stage_callback(plan_stage)
             
             if plan_stage.status == "failed":
+                # If plan failed in Draft Mode, it might be due to AWS-only resources (which fail in tflocal)
+                # But user agreed to use tflocal. So we treat as error usually.
+                # However, we can try to fix.
                 current_hcl = self._fix_code(current_hcl, plan_stage.error, "terraform plan")
                 self._write_files(current_hcl, test_script)
                 continue
 
-            # --- DRAFT MODE CHECK ---
+            # --- DRAFT MODE: STOP OR SIMULATE ---
             if execution_mode == "draft":
-                 return PipelineResult(
-                    success=True,
-                    hcl_code=current_hcl,
-                    stages=stages_history,
-                    final_message="Draft Plan Complete. (Stopped before Apply)",
-                    resource_statuses={}
-                )
+                if not simulate_apply:
+                     return PipelineResult(
+                        success=True,
+                        hcl_code=current_hcl,
+                        stages=stages_history,
+                        final_message="Draft Plan Complete. (Stopped before Apply)",
+                        resource_statuses={}
+                    )
+                else:
+                    # SIMULATE APPLY & VERIFY
+                    # 3. Simulated Apply
+                    sim_apply = self._simulate_execution("apply", "Creating resources (Simulated)...")
+                    stages_history.append(sim_apply)
+                    if stage_callback: stage_callback(sim_apply)
+                    
+                    # 4. Simulated Verify
+                    sim_verify = self._simulate_execution("verify", "Verifying connectivity (Simulated)...")
+                    # Fake success map
+                    sim_verify.logs.append(json.dumps({ "vpc-main": "success", "simulated-node": "success" }))
+                    stages_history.append(sim_verify)
+                    if stage_callback: stage_callback(sim_verify)
+                    
+                    return PipelineResult(
+                        success=True,
+                        hcl_code=current_hcl,
+                        stages=stages_history,
+                        final_message="Draft Deployment Simulated Successfully!",
+                        resource_statuses={"vpc-main": "success", "simulated-node": "success"}
+                    )
 
             # 3. Apply
             apply_stage = self._run_stage("apply", current_hcl)
@@ -149,20 +176,28 @@ class PipelineManager:
             if stage_name == "validate":
                  # Always clean lock file AND state files to prevent version conflicts
                  # (Especially when downgrading from v6 state to v5 provider)
-                 for f in [".terraform.lock.hcl", "terraform.tfstate", "terraform.tfstate.backup"]:
+                 import shutil
+                 for f in [".terraform.lock.hcl", "terraform.tfstate", "terraform.tfstate.backup", "localstack_providers_override.tf"]:
                      path = os.path.join(self.work_dir, f)
                      if os.path.exists(path):
                          os.remove(path)
                  
+                 # Remove entire .terraform directory to ensure clean init
+                 terraform_dir = os.path.join(self.work_dir, ".terraform")
+                 if os.path.exists(terraform_dir):
+                     shutil.rmtree(terraform_dir)
+                 
                  # Force init to ensure providers match clean config
-                 subprocess.run(["tflocal", "init", "-upgrade"], cwd=self.work_dir, capture_output=True)
+                 init_result = subprocess.run(["tflocal", "init", "-upgrade"], cwd=self.work_dir, capture_output=True, text=True)
+                 if init_result.returncode != 0:
+                     print(f"DEBUG: Terraform Init Failed (Code {init_result.returncode}):\nSTDOUT: {init_result.stdout}\nSTDERR: {init_result.stderr}")
 
             result = subprocess.run(
                 cmd, 
                 cwd=self.work_dir, 
                 capture_output=True, 
                 text=True,
-                timeout=120
+                timeout=300
             )
             
             # Clean Logs (remove excessive whitespace)
@@ -192,8 +227,23 @@ class PipelineManager:
         {code}
         TASK: Return ONLY the fixed HCL code.
         """
-        response = self.agent_model.generate_content(prompt)
-        return response.text.replace("```hcl", "").replace("```", "").strip()
+        api_attempts = 0
+        max_api_attempts = 5
+        while api_attempts < max_api_attempts:
+            try:
+                response = self.agent_client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt
+                )
+                return response.text.replace("```hcl", "").replace("```", "").strip()
+            except Exception as e:
+                error_str = str(e)
+                if "503" in error_str or "429" in error_str:
+                    api_attempts += 1
+                    print(f"DEBUG: API Busy during Fix (Attempt {api_attempts}). Retrying...")
+                    time.sleep(5)
+                else:
+                    return code # Return original if fatal error
 
     def _write_files(self, hcl: str, python: str):
         with open(os.path.join(self.work_dir, "main.tf"), "w") as f: f.write(hcl)

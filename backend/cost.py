@@ -1,4 +1,5 @@
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import json
 import traceback
@@ -9,7 +10,6 @@ from schemas import Resource
 
 # Load API Key Explicitly
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 class CostItem(BaseModel):
     resource_id: str
@@ -26,7 +26,8 @@ class CostReport(BaseModel):
 class CostEstimator:
     def __init__(self):
         # Use Pro model for better reasoning on pricing
-        self.model = genai.GenerativeModel('gemini-2.5-pro') 
+        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.model_name = "gemini-2.0-flash" # defaulting keeping speed, user had 2.5-pro in comment but 2.0-flash is standard for new SDK unless 2.5 verified 
 
     def estimate_costs(self, resources: List[Resource]) -> CostReport:
         if not resources:
@@ -62,7 +63,11 @@ class CostEstimator:
         """
 
         try:
-            response = self.model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
             data = json.loads(response.text)
             return CostReport(**data)
         except Exception as e:

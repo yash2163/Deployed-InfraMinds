@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import ReactFlow, {
     Node,
     Edge,
@@ -8,624 +8,908 @@ import ReactFlow, {
     Background,
     useNodesState,
     useEdgesState,
-    Connection,
-    addEdge,
     NodeMouseHandler,
+    MarkerType,
+    Handle,
+    Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { fetchGraph, GraphState, simulateBlastRadius, approvePlan, rejectPlan, fetchCost, CostReport } from '../lib/api';
-import { Check, X, DollarSign } from 'lucide-react';
-
+import { fetchGraph, GraphState, simulateBlastRadius, fetchCost, CostReport, generateGraphLayout } from '../lib/api';
+import { DollarSign, Layers, Box, Database, Globe, Shield, Activity, Archive, Cloud, Server, Router, Lock, Zap, Sparkles, Eye, EyeOff } from 'lucide-react';
 import dagre from 'dagre';
 
-const initialNodes: Node[] = [];
-const initialEdges: Edge[] = [];
+/* -------------------------------------------------------------------------- */
+/*                                CONSTANTS                                   */
+/* -------------------------------------------------------------------------- */
 
-// Helper to calculate layout
-const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
+const RESOURCE_WIDTH = 180;
+const RESOURCE_HEIGHT = 60;
+const SUBNET_PADDING = 30;
+const VPC_PADDING = 40;
+const GRID_GAP = 15;
+const GRID_COLUMNS = 2; // For resources inside subnets
+
+// AWS Architecture Colors
+const COLORS = {
+    VPC_BORDER: '#8c8c8c',
+    VPC_BG: 'rgba(255, 255, 255, 0.05)',
+    SUBNET_PUBLIC_BORDER: '#248814',
+    SUBNET_PUBLIC_BG: 'rgba(240, 253, 244, 0.3)',
+    SUBNET_PRIVATE_BORDER: '#0073bb',
+    SUBNET_PRIVATE_BG: 'rgba(239, 246, 255, 0.3)',
+    EDGE: '#5d5d5d',
+    // Resource colors by type
+    COMPUTE: '#FF9900', // Orange
+    DATABASE: '#3B48CC', // Blue
+    STORAGE: '#569A31', // Green
+    NETWORKING: '#8C4FFF', // Purple
+    DEFAULT: '#232F3E' // Dark
+};
+
+/* -------------------------------------------------------------------------- */
+/*                          LAYOUT ENGINE                                     */
+/* -------------------------------------------------------------------------- */
+
+interface LayoutNode {
+    id: string;
+    type: string;
+    data: any;
+    position: { x: number; y: number };
+    style?: any;
+    parentNode?: string;
+    extent?: 'parent';
+    properties?: any;
+    width?: number;
+    height?: number;
+}
+
+interface DimensionInfo {
+    width: number;
+    height: number;
+    children: LayoutNode[];
+}
+
+/**
+ * Bottom-up dimension calculator:
+ * 1. Resources have fixed dimensions
+ * 2. Subnets are sized based on grid layout of resources
+ * 3. VPCs are sized based on grid layout of subnets
+ */
+const calculateGroupDimensions = (
+    resources: any[],
+    subnets: any[],
+    vpcs: any[],
+    cleanRef: (ref: string) => string
+): Map<string, DimensionInfo> => {
+    const dimMap = new Map<string, DimensionInfo>();
+
+    // 1. Calculate Subnet Dimensions
+    subnets.forEach(subnet => {
+        const subnetResources = resources.filter(
+            r => cleanRef(r.properties?.subnet_id) === subnet.id
+        );
+
+        if (subnetResources.length === 0) {
+            // Empty subnet
+            dimMap.set(subnet.id, {
+                width: RESOURCE_WIDTH + SUBNET_PADDING * 2,
+                height: 100,
+                children: []
+            });
+            return;
+        }
+
+        const rows = Math.ceil(subnetResources.length / GRID_COLUMNS);
+        const cols = Math.min(subnetResources.length, GRID_COLUMNS);
+
+        const contentWidth = cols * RESOURCE_WIDTH + (cols - 1) * GRID_GAP;
+        const contentHeight = rows * RESOURCE_HEIGHT + (rows - 1) * GRID_GAP;
+
+        dimMap.set(subnet.id, {
+            width: contentWidth + SUBNET_PADDING * 2,
+            height: contentHeight + SUBNET_PADDING * 2 + 20, // +20 for label
+            children: subnetResources
+        });
+    });
+
+    // 2. Calculate VPC Dimensions
+    vpcs.forEach(vpc => {
+        const vpcSubnets = subnets.filter(
+            s => cleanRef(s.properties?.vpc_id) === vpc.id
+        );
+
+        if (vpcSubnets.length === 0) {
+            dimMap.set(vpc.id, {
+                width: 400,
+                height: 300,
+                children: []
+            });
+            return;
+        }
+
+        // Stack subnets vertically within VPC (by AZ)
+        const azMap: Record<string, any[]> = {};
+        vpcSubnets.forEach(subnet => {
+            const az = subnet.properties?.availability_zone || 'unknown';
+            if (!azMap[az]) azMap[az] = [];
+            azMap[az].push(subnet);
+        });
+
+        const azCount = Object.keys(azMap).length;
+        let maxWidth = 0;
+        let totalHeight = 0;
+
+        Object.values(azMap).forEach(azSubnets => {
+            let azHeight = 0;
+            let azWidth = 0;
+
+            azSubnets.forEach(subnet => {
+                const subnetDim = dimMap.get(subnet.id)!;
+                azHeight += subnetDim.height + GRID_GAP;
+                azWidth = Math.max(azWidth, subnetDim.width);
+            });
+
+            totalHeight = Math.max(totalHeight, azHeight);
+            maxWidth += azWidth + GRID_GAP;
+        });
+
+        dimMap.set(vpc.id, {
+            width: maxWidth + VPC_PADDING * 2,
+            height: totalHeight + VPC_PADDING * 2 + 30, // +30 for header
+            children: vpcSubnets
+        });
+    });
+
+    return dimMap;
+};
+
+/**
+ * Recursive Layout Engine using Dagre (LR) for top-level flow
+ */
+/**
+ * Helper to clean HCL references like "${aws_vpc.main.id}" -> "main"
+ * Also handles direct IDs.
+ */
+const cleanRef = (ref: string): string => {
+    if (!ref) return '';
+    if (ref.startsWith('${') && ref.endsWith('}')) {
+        // format: ${type.id.attr}
+        const parts = ref.slice(2, -1).split('.');
+        if (parts.length >= 2) return parts[1];
+    }
+    return ref;
+};
+
+const calculateProfessionalLayout = (rawNodes: any[], rawEdges: any[]): LayoutNode[] => {
+    const layoutNodes: LayoutNode[] = [];
+
+    const vpcs = rawNodes.filter(n => n.type === 'aws_vpc');
+    const subnets = rawNodes.filter(n => n.type === 'aws_subnet');
+    const resources = rawNodes.filter(
+        n => !['aws_vpc', 'aws_subnet'].includes(n.type)
+    );
+
+    // Categorize resources
+    const subnetResources = resources.filter(r => r.properties?.subnet_id);
+    const globalResources = resources.filter(
+        r => !r.properties?.subnet_id &&
+            !['aws_s3_bucket', 'aws_dynamodb_table', 'aws_cloudfront_distribution'].includes(r.type)
+    );
+    const edgeResources = resources.filter(r =>
+        ['aws_s3_bucket', 'aws_dynamodb_table', 'aws_cloudfront_distribution'].includes(r.type)
+    );
+
+    // Calculate dimensions bottom-up
+    // We need to pass a "resolver" or clean the references first
+    // For simplicity, we'll just fix the comparison inside calculateGroupDimensions logic if needed
+    // But calculateGroupDimensions is separate. Let's update it separately or move it inside if needed. 
+    // Actually, let's just make cleanRef available to it or pass cleaned copies.
+
+    // Better strategy: Fix the calculateGroupDimensions call by ensuring it can match.
+    // BUT calculateGroupDimensions is OUTSIDE this function scope in the original file. 
+    // I need to update calculateGroupDimensions as well.
+
+    const dimMap = calculateGroupDimensions(
+        subnetResources,
+        subnets,
+        vpcs,
+        cleanRef // Pass the helper down
+    );
+
+    // --- TOP-LEVEL DAGRE LAYOUT ---
     const dagreGraph = new dagre.graphlib.Graph();
     dagreGraph.setDefaultEdgeLabel(() => ({}));
-    dagreGraph.setGraph({ rankdir: 'TB' }); // TB = Top to Bottom
+    dagreGraph.setGraph({ rankdir: 'LR', nodesep: 80, ranksep: 150 });
 
-    nodes.forEach((node) => {
-        // Set generic width/height for layout calculation
-        dagreGraph.setNode(node.id, { width: 150, height: 50 });
+    // Add VPCs
+    vpcs.forEach(vpc => {
+        const dim = dimMap.get(vpc.id)!;
+        dagreGraph.setNode(vpc.id, { width: dim.width, height: dim.height });
     });
 
-    edges.forEach((edge) => {
-        dagreGraph.setEdge(edge.source, edge.target);
+    // Add Global
+    globalResources.forEach(res => {
+        dagreGraph.setNode(res.id, { width: RESOURCE_WIDTH, height: RESOURCE_HEIGHT });
     });
 
+    // Add Edge Resources
+    edgeResources.forEach(res => {
+        dagreGraph.setNode(res.id, { width: RESOURCE_WIDTH, height: RESOURCE_HEIGHT });
+    });
+
+    const getTopLevelParent = (nodeId: string): string => {
+        const node = rawNodes.find(n => n.id === nodeId);
+        if (!node) return nodeId;
+
+        if (node.type === 'aws_vpc') return nodeId;
+        if (globalResources.find(r => r.id === nodeId)) return nodeId;
+        if (edgeResources.find(r => r.id === nodeId)) return nodeId;
+
+        if (node.properties?.subnet_id) {
+            const cleanSubnetId = cleanRef(node.properties.subnet_id);
+            const subnet = subnets.find(s => s.id === cleanSubnetId);
+            if (subnet?.properties?.vpc_id) {
+                return cleanRef(subnet.properties.vpc_id);
+            }
+        }
+
+        return nodeId;
+    };
+
+    // Add edges to Dagre (mapped to top-level containers)
+    const topLevelEdges = new Set<string>();
+    rawEdges.forEach(edge => {
+        const sourceTop = getTopLevelParent(edge.source);
+        const targetTop = getTopLevelParent(edge.target);
+
+        // Only add if both nodes exist in Dagre and it's not a self-loop
+        if (sourceTop !== targetTop &&
+            dagreGraph.hasNode(sourceTop) &&
+            dagreGraph.hasNode(targetTop)) {
+            const edgeKey = `${sourceTop}->${targetTop}`;
+            if (!topLevelEdges.has(edgeKey)) {
+                dagreGraph.setEdge(sourceTop, targetTop);
+                topLevelEdges.add(edgeKey);
+            }
+        }
+    });
+
+    // Run Dagre layout
     dagre.layout(dagreGraph);
 
-    const layoutedNodes = nodes.map((node) => {
-        const nodeWithPosition = dagreGraph.node(node.id);
-        node.position = {
-            x: nodeWithPosition.x - 75, // Center offset
-            y: nodeWithPosition.y - 25,
-        };
-        return node;
+    // --- BUILD VPC NODES WITH CHILDREN ---
+    vpcs.forEach(vpc => {
+        const vpcDim = dimMap.get(vpc.id)!;
+        const vpcDagreNode = dagreGraph.node(vpc.id);
+
+        // VPC Group Node
+        layoutNodes.push({
+            id: vpc.id,
+            type: 'group',
+            data: {
+                label: `VPC: ${vpc.properties?.tags?.Name || vpc.id}`,
+                variant: 'vpc'
+            },
+            position: {
+                x: vpcDagreNode.x - vpcDim.width / 2,
+                y: vpcDagreNode.y - vpcDim.height / 2
+            },
+            style: {
+                width: vpcDim.width,
+                height: vpcDim.height,
+                zIndex: 0
+            }
+        });
+
+        // Get subnets in this VPC
+        const vpcSubnets = subnets.filter(s => cleanRef(s.properties?.vpc_id) === vpc.id);
+
+        // Group by AZ
+        const azMap: Record<string, any[]> = {};
+        vpcSubnets.forEach(subnet => {
+            const az = subnet.properties?.availability_zone || 'unknown';
+            if (!azMap[az]) azMap[az] = [];
+            azMap[az].push(subnet);
+        });
+
+        let currentX = VPC_PADDING;
+        Object.entries(azMap).forEach(([az, azSubnets]) => {
+            let currentY = VPC_PADDING + 30; // Space for AZ label
+            let maxWidth = 0;
+
+            // AZ Header
+            layoutNodes.push({
+                id: `header-${vpc.id}-${az}`,
+                type: 'group-label',
+                data: { label: az },
+                position: { x: currentX, y: VPC_PADDING },
+                parentNode: vpc.id,
+                extent: 'parent',
+                style: { zIndex: 1 }
+            } as any);
+
+            azSubnets.forEach(subnet => {
+                const subnetDim = dimMap.get(subnet.id)!;
+
+                // Subnet Group Node
+                layoutNodes.push({
+                    id: subnet.id,
+                    type: 'group',
+                    data: {
+                        label: subnet.properties?.tags?.Name || subnet.id,
+                        subLabel: subnet.properties?.cidr_block,
+                        variant: subnet.properties?.map_public_ip_on_launch ? 'public' : 'private'
+                    },
+                    position: { x: currentX, y: currentY },
+                    parentNode: vpc.id,
+                    extent: 'parent',
+                    style: {
+                        width: subnetDim.width,
+                        height: subnetDim.height,
+                        zIndex: 2
+                    }
+                } as any);
+
+                // Resources inside Subnet (Grid Layout)
+                const subnetResources = dimMap.get(subnet.id)!.children;
+                subnetResources.forEach((res, idx) => {
+                    const row = Math.floor(idx / GRID_COLUMNS);
+                    const col = idx % GRID_COLUMNS;
+
+                    layoutNodes.push({
+                        ...res,
+                        parentNode: subnet.id,
+                        extent: 'parent',
+                        position: {
+                            x: SUBNET_PADDING + col * (RESOURCE_WIDTH + GRID_GAP),
+                            y: SUBNET_PADDING + 20 + row * (RESOURCE_HEIGHT + GRID_GAP)
+                        },
+                        style: { ...res.style, zIndex: 10 }
+                    });
+                });
+
+                currentY += subnetDim.height + GRID_GAP;
+                maxWidth = Math.max(maxWidth, subnetDim.width);
+            });
+
+            currentX += maxWidth + GRID_GAP * 2;
+        });
     });
 
-    return { nodes: layoutedNodes, edges };
+    // --- GLOBAL RESOURCES (positioned by Dagre) ---
+    globalResources.forEach(res => {
+        const dagreNode = dagreGraph.node(res.id);
+        if (dagreNode) {
+            layoutNodes.push({
+                ...res,
+                position: {
+                    x: dagreNode.x - RESOURCE_WIDTH / 2,
+                    y: dagreNode.y - RESOURCE_HEIGHT / 2
+                },
+                style: { ...res.style, zIndex: 10 }
+            });
+        }
+    });
+
+    // --- EDGE RESOURCES (positioned by Dagre) ---
+    edgeResources.forEach(res => {
+        const dagreNode = dagreGraph.node(res.id);
+        if (dagreNode) {
+            layoutNodes.push({
+                ...res,
+                position: {
+                    x: dagreNode.x - RESOURCE_WIDTH / 2,
+                    y: dagreNode.y - RESOURCE_HEIGHT / 2
+                },
+                style: { ...res.style, zIndex: 10 }
+            });
+        }
+    });
+
+    return layoutNodes;
 };
+
+/* -------------------------------------------------------------------------- */
+/*                              MAIN COMPONENT                                */
+/* -------------------------------------------------------------------------- */
 
 interface GraphVisualizerProps {
     onNodeSelected?: (nodeId: string) => void;
     nodeStatuses?: Record<string, string>;
     terraformCode?: string | null;
-    overrideGraph?: GraphState | null; // For Streaming Visualization
+    overrideGraph?: GraphState | null;
 }
 
 export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terraformCode, overrideGraph }: GraphVisualizerProps) {
-    const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-    const [showCode, setShowCode] = useState(false);
+    const [nodes, setNodes, onNodesChange] = useNodesState([]);
+    const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+    // AI Layout State
+    const [layoutMode, setLayoutMode] = useState<'default' | 'professional'>('default');
+    const [layoutOverrides, setLayoutOverrides] = useState<Record<string, any>>({});
+    const [isRefactoring, setIsRefactoring] = useState(false);
+    const [showDetails, setShowDetails] = useState(false); // New State
 
     const [isInitialLoad, setIsInitialLoad] = useState(true);
     const [costReport, setCostReport] = useState<CostReport | null>(null);
     const [showCostModal, setShowCostModal] = useState(false);
     const [lastCostHash, setLastCostHash] = useState<string>("");
-
-    // Missing state variables restore
     const [affectedNodeIds, setAffectedNodeIds] = useState<Set<string>>(new Set());
-    const [isPendingApproval, setIsPendingApproval] = useState(false);
-    const [isProcessing, setIsProcessing] = useState(false);
+    const [rawState, setRawState] = useState<GraphState | null>(null);
+    const [showCode, setShowCode] = useState(false);
+    const [contextMenu, setContextMenu] = useState<any>(null);
+    const [selectedDetailNode, setSelectedDetailNode] = useState<any>(null);
 
-    // Poll for graph updates
     const refreshGraph = useCallback(async () => {
         try {
-            let state = overrideGraph; // Default to override if exists
-
-            if (!state) {
-                state = await fetchGraph();
-            }
-
+            let state = overrideGraph;
+            if (!state) state = await fetchGraph();
             if (!state) return;
+            setRawState(state);
 
-            // Check for pending approval (proposed status only)
-            const hasProposed = state.resources.some(r => r.status === 'proposed');
-            setIsPendingApproval(hasProposed);
+            setRawState(state);
 
-            // Fetch Cost
-            // Calculate Hash for Cost Trigger
-            const currentHash = state.resources.map(r => r.id).sort().join(',');
-
-            if (currentHash !== lastCostHash || isInitialLoad) {
-                console.log("Architecture changed (or initial load), fetching cost...");
-                fetchCost().then(setCostReport).catch(e => console.error(e));
-                setLastCostHash(currentHash);
+            // Manual Cost Calculation Only (as requested)
+            if (isInitialLoad) {
                 setIsInitialLoad(false);
             }
-
-            // Process Data
-            const rawNodes: Node[] = state.resources.map((res) => {
-                const isAffected = affectedNodeIds.has(res.id);
-                const verificationStatus = nodeStatuses ? nodeStatuses[res.id] : undefined;
-
-                // Group Detection
-                const isGroup = ['aws_vpc', 'network_container', 'aws_subnet', 'network_zone', 'aws_security_group'].includes(res.type);
-
-                let bgColor = res.status === 'planned' ? '#fff7ed' : '#fff';
-                let borderColor = res.status === 'planned' ? '2px dashed #f59e0b' : '1px solid #777';
-
-                if (isAffected) {
-                    bgColor = '#fee2e2';
-                    borderColor = '2px solid red';
-                } else if (verificationStatus === 'success') {
-                    bgColor = '#dcfce7';
-                    borderColor = '2px solid #22c55e';
-                } else if (verificationStatus === 'failed') {
-                    bgColor = '#fee2e2';
-                    borderColor = '2px solid #ef4444';
-                }
-
-                // Phase-based Styling
-                if (state.graph_phase === 'intent') {
-                    bgColor = '#f3e8ff';
-                    borderColor = '2px dashed #a855f7';
-                } else if (state.graph_phase === 'reasoned') {
-                    bgColor = '#e0f2fe';
-                    borderColor = '2px solid #0ea5e9';
-                }
-
-                if (res.status === 'proposed') {
-                    bgColor = '#eff6ff';
-                    borderColor = '2px dashed #3b82f6';
-                }
-
-                // Group Styling Overrides
-                if (isGroup) {
-                    bgColor = 'rgba(240, 249, 255, 0.05)'; // Very transparent blue
-                    borderColor = '2px dashed rgba(59, 130, 246, 0.3)';
-                }
-
-                return {
-                    id: res.id,
-                    // --- PARENT MAPPING ---
-                    // REVERTED: User reported issue with nodes merging/getting stuck.
-                    // parentNode: res.parent_id ? res.parent_id : undefined,
-                    // extent: 'parent',
-                    // ----------------------
-                    data: {
-                        label: isGroup ? res.id : `${res.type}\n${res.id}`,
-                        status: res.status,
-                        type: res.type,
-                        id: res.id,
-                        description: res.description || "No description available.",
-                        properties: res.properties
-                    },
-                    style: {
-                        background: bgColor,
-                        border: borderColor,
-                        width: isGroup ? undefined : 150, // Let groups auto-size or be handled by layout
-                        minWidth: isGroup ? 400 : 150,
-                        minHeight: isGroup ? 300 : 80,
-                        opacity: isGroup ? 0.9 : 1, // Groups slightly transparent
-                        color: isAffected ? 'red' : ((isGroup) ? '#64748b' : 'black'),
-                        fontSize: isGroup ? '14px' : '12px',
-                        fontWeight: 'bold',
-                        boxShadow: isGroup ? 'none' : '0px 4px 6px rgba(0,0,0,0.1)',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        padding: '10px',
-                        zIndex: isGroup ? -1 : 1, // Groups behind
-                    },
-                    position: { x: 0, y: 0 }
-                };
-            });
-
-            const rawEdges: Edge[] = state.edges.map((edge) => {
-                const isAffected = affectedNodeIds.has(edge.source) || affectedNodeIds.has(edge.target);
-                const isProposed = edge.relation === 'proposed' || (rawNodes.find(n => n.id === edge.source)?.data.status === 'proposed');
-
-                return {
-                    id: `e-${edge.source}-${edge.target}`,
-                    source: edge.source,
-                    target: edge.target,
-                    animated: true,
-                    label: edge.relation,
-                    style: { stroke: isAffected ? 'red' : (isProposed ? '#3b82f6' : '#b1b1b7'), strokeDasharray: isProposed ? '5,5' : '0' },
-                    labelStyle: { fill: isAffected ? 'red' : '#b1b1b7' }
-                };
-            });
-
-            // Update Edges
-            setEdges(rawEdges);
-
-            // Update Nodes with Layout Logic
-            setNodes((currentNodes) => {
-                const nodeCountChanged = currentNodes.length !== state.resources.length;
-
-                // Merge positions
-                const nodesWithPositions = rawNodes.map(node => {
-                    const existing = currentNodes.find(n => n.id === node.id);
-                    if (existing) {
-                        return { ...node, position: existing.position };
-                    }
-                    return node;
-                });
-
-                if (isInitialLoad || nodeCountChanged) {
-                    const { nodes: layoutedNodes } = getLayoutedElements(nodesWithPositions, rawEdges);
-                    return layoutedNodes;
-                }
-
-                return nodesWithPositions;
-            });
-
         } catch (error) {
             console.error("Failed to fetch graph", error);
         }
-    }, [affectedNodeIds, nodeStatuses, isInitialLoad, lastCostHash, setNodes, setEdges, overrideGraph]);
+    }, [overrideGraph, isInitialLoad]);
+
+    useEffect(() => {
+        if (!rawState) return;
+
+        // Prepare Nodes with styling and icons
+        const allRawNodes = rawState.resources.map(res => {
+            const isAffected = affectedNodeIds.has(res.id);
+
+            // Determine color based on resource type
+            let headerColor = COLORS.DEFAULT;
+            if (res.type.includes('instance') || res.type.includes('ecs') || res.type.includes('lambda')) {
+                headerColor = COLORS.COMPUTE;
+            } else if (res.type.includes('rds') || res.type.includes('db') || res.type.includes('dynamodb')) {
+                headerColor = COLORS.DATABASE;
+            } else if (res.type.includes('s3') || res.type.includes('ebs')) {
+                headerColor = COLORS.STORAGE;
+            } else if (res.type.includes('vpc') || res.type.includes('subnet') || res.type.includes('lb') || res.type.includes('gateway')) {
+                headerColor = COLORS.NETWORKING;
+            }
+
+            let Icon = Box;
+            if (res.type.includes('ecs') || res.type.includes('instance')) Icon = Server;
+            if (res.type.includes('rds') || res.type.includes('db')) Icon = Database;
+            if (res.type.includes('s3')) Icon = Archive;
+            if (res.type.includes('lb')) Icon = Activity;
+            if (res.type.includes('cloudfront')) Icon = Globe;
+            if (res.type.includes('vpc')) Icon = Cloud;
+            if (res.type.includes('security')) Icon = Shield;
+            if (res.type.includes('route') || res.type.includes('nat') || res.type.includes('gateway')) Icon = Router;
+            if (res.type.includes('lambda')) Icon = Zap;
+
+            return {
+                id: res.id,
+                type: res.type,
+                data: {
+                    label: res.id,
+                    type: res.type,
+                    icon: <Icon size={16} />,
+                    headerColor,
+                    status: res.status,
+                    properties: res.properties,
+                    isAffected
+                },
+                style: {
+                    width: RESOURCE_WIDTH,
+                    height: RESOURCE_HEIGHT
+                },
+                properties: res.properties,
+                parent_id: res.parent_id
+            };
+        });
+
+        // Calculate Default Layout
+        let finalNodes = calculateProfessionalLayout(allRawNodes, rawState.edges);
+
+        // AI Override Logic with Filtering
+        if (layoutMode === 'professional' && Object.keys(layoutOverrides).length > 0) {
+            finalNodes = finalNodes.map(node => {
+                const override = layoutOverrides[node.id];
+                if (override) {
+                    // NEW: Filter Hidden Nodes unless Show Details is ON
+                    if (override.hidden && !showDetails) return null;
+
+                    // Sanitize Parent ID (Handle 'null' string or missing parent)
+                    let parentId = override.parentId;
+                    if (parentId === 'null') parentId = undefined;
+
+                    // Safety: If parent is hidden/missing, detach to prevent crash
+                    if (parentId && (!layoutOverrides[parentId] || (layoutOverrides[parentId].hidden && !showDetails))) {
+                        parentId = undefined;
+                    }
+
+                    return {
+                        ...node,
+                        position: { x: override.x, y: override.y },
+                        style: {
+                            ...node.style,
+                            width: override.width || node.style.width,
+                            height: override.height || node.style.height
+                        },
+                        parentNode: parentId,
+                        extent: parentId ? 'parent' : undefined,
+                    };
+                }
+                return node;
+            }).filter(Boolean) as any[]; // Important: Filter nulls
+        }
+
+        // Create a Set of valid node IDs for O(1) lookup
+        const validNodeIds = new Set(finalNodes.map(n => n.id));
+
+        const finalEdges = rawState.edges
+            .filter(e => validNodeIds.has(e.source) && validNodeIds.has(e.target)) // NEW: Filter dangling edges
+            .map(e => ({
+                id: `e-${e.source}-${e.target}`,
+                source: e.source,
+                target: e.target,
+                type: layoutMode === 'professional' ? 'step' : 'smoothstep', // Orthogonal for pro mode
+                animated: false,
+                style: { stroke: COLORS.EDGE, strokeWidth: 1.5, zIndex: 999 },
+                markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.EDGE },
+                zIndex: 999
+            }));
+
+        setNodes(finalNodes);
+        setEdges(finalEdges);
+    }, [rawState, affectedNodeIds, layoutMode, layoutOverrides, showDetails]);
 
     useEffect(() => {
         refreshGraph();
-
-        // Only poll if NOT in override mode
         if (!overrideGraph) {
-            const interval = setInterval(refreshGraph, 5000); // Poll every 5s
+            const interval = setInterval(refreshGraph, 5000);
             return () => clearInterval(interval);
         }
     }, [refreshGraph, overrideGraph]);
 
-    // Context Menu State
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, id: string, type: 'node' | 'edge' } | null>(null);
+    const handleRefactorLayout = async () => {
+        if (layoutMode === 'professional') {
+            setLayoutMode('default');
+            return;
+        }
 
-    const onNodeClick: NodeMouseHandler = (event, node) => {
-        event.preventDefault();
-        event.stopPropagation(); // Prevent container click from closing menu
-        setContextMenu({
-            x: event.clientX,
-            y: event.clientY,
-            id: node.id,
-            type: 'node'
-        });
+        setIsRefactoring(true);
+        try {
+            const plan = await generateGraphLayout();
+            if (plan && Object.keys(plan).length > 0) {
+                setLayoutOverrides(plan);
+                setLayoutMode('professional');
+            }
+        } catch (e) {
+            console.error("Layout refactor failed", e);
+        } finally {
+            setIsRefactoring(false);
+        }
     };
 
-    const onEdgeClick = (event: React.MouseEvent, edge: Edge) => {
-        event.preventDefault();
-        event.stopPropagation(); // Prevent container click from closing menu
-        setContextMenu({
-            x: event.clientX,
-            y: event.clientY,
-            id: edge.id,
-            type: 'edge'
-        });
-    }
+    const handleCalculateCost = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!rawState) return;
 
-    const [selectedDetailNode, setSelectedDetailNode] = useState<any>(null);
+        try {
+            const report = await fetchCost();
+            setCostReport(report);
+            setShowCostModal(true);
+        } catch (error) {
+            console.error("Failed to calculate cost", error);
+        }
+    };
+
+
+
+    const onNodeClick: NodeMouseHandler = (event, node) => {
+        event.preventDefault(); event.stopPropagation();
+        if (node.type === 'group' || node.type === 'group-label') return;
+        setContextMenu({ x: event.clientX, y: event.clientY, id: node.id, type: 'node' });
+    };
 
     const handleAction = (action: 'details' | 'delete') => {
         if (!contextMenu) return;
-
         if (action === 'delete') {
-            if (contextMenu.type === 'node') {
-                console.log("Simulating blast radius for:", contextMenu.id);
-                simulateBlastRadius(contextMenu.id).then(result => {
-                    const impacted = new Set<string>(result.affected_nodes as string[]);
-                    impacted.add(contextMenu.id);
-                    setAffectedNodeIds(impacted);
-
-                    if (onNodeSelected) {
-                        onNodeSelected(contextMenu.id);
-                    }
-                });
-            } else {
-                alert("Impact Analysis for Edge Deletion is coming in v2.0!");
-            }
+            simulateBlastRadius(contextMenu.id).then(result => {
+                const impacted = new Set<string>(result.affected_nodes as string[]);
+                impacted.add(contextMenu.id);
+                setAffectedNodeIds(impacted);
+                if (onNodeSelected) onNodeSelected(contextMenu.id);
+            });
         } else if (action === 'details') {
-            if (contextMenu.type === 'node') {
-                const node = nodes.find(n => n.id === contextMenu.id);
-                if (node) setSelectedDetailNode(node.data);
-            } else {
-                const edge = edges.find(e => e.id === contextMenu.id);
-                if (edge) alert(`Connection Details:\n\nSource: ${edge.source}\nTarget: ${edge.target}\nRelation: ${edge.label}`);
-            }
+            const node = rawState?.resources.find(n => n.id === contextMenu.id);
+            if (node) setSelectedDetailNode(node);
         }
         setContextMenu(null);
     };
 
+    // Custom Node Types
+    const nodeTypes = useMemo(() => ({
+        card: ({ data }: any) => {
+            const bgColor = data.isAffected ? '#fee2e2' : '#ffffff';
+            const borderColor = data.isAffected ? '#ef4444' : '#e5e7eb';
+            const boxShadow = data.isAffected ? '0 0 0 2px #fecaca' : '0 1px 3px rgba(0,0,0,0.1)';
+
+            return (
+                <div style={{
+                    width: RESOURCE_WIDTH,
+                    height: RESOURCE_HEIGHT,
+                    background: bgColor,
+                    border: `1px solid ${borderColor}`,
+                    borderRadius: '6px',
+                    boxShadow,
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column'
+                }}>
+                    <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+
+                    {/* Header Bar */}
+                    <div style={{
+                        background: data.headerColor,
+                        height: '24px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '0 8px',
+                        gap: '6px',
+                        color: 'white'
+                    }}>
+                        {data.icon}
+                        <span style={{
+                            fontSize: '10px',
+                            fontWeight: '600',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.5px'
+                        }}>
+                            {data.type.replace('aws_', '').replace(/_/g, ' ')}
+                        </span>
+                    </div>
+
+                    {/* Body */}
+                    <div style={{
+                        flex: 1,
+                        padding: '6px 8px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center'
+                    }}>
+                        <div style={{
+                            fontSize: '13px',
+                            fontWeight: '600',
+                            color: '#1f2937',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                        }} title={data.label}>
+                            {data.label}
+                        </div>
+                    </div>
+
+                    <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+                </div>
+            );
+        },
+        group: ({ data }: any) => {
+            const isVpc = data.variant === 'vpc';
+            const isPublic = data.variant === 'public';
+
+            let borderColor = isVpc ? COLORS.VPC_BORDER : (isPublic ? COLORS.SUBNET_PUBLIC_BORDER : COLORS.SUBNET_PRIVATE_BORDER);
+            let bgColor = isVpc ? COLORS.VPC_BG : (isPublic ? COLORS.SUBNET_PUBLIC_BG : COLORS.SUBNET_PRIVATE_BG);
+
+            return (
+                <div style={{
+                    width: '100%',
+                    height: '100%',
+                    border: `2px dashed ${borderColor}`,
+                    backgroundColor: bgColor,
+                    borderRadius: '8px',
+                    position: 'relative'
+                }}>
+                    <div style={{
+                        position: 'absolute',
+                        top: '-12px',
+                        left: '10px',
+                        backgroundColor: '#ffffff',
+                        padding: '2px 10px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        color: borderColor,
+                        border: `1.5px solid ${borderColor}`,
+                        borderRadius: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                    }}>
+                        {isVpc ? <><Cloud size={12} />{data.label}</> :
+                            isPublic ? <><Globe size={12} />{data.label}</> :
+                                <><Lock size={12} />{data.label}</>}
+                    </div>
+                    {data.subLabel && (
+                        <div style={{
+                            position: 'absolute',
+                            top: '8px',
+                            right: '10px',
+                            fontSize: '9px',
+                            color: '#6b7280',
+                            fontFamily: 'monospace'
+                        }}>
+                            {data.subLabel}
+                        </div>
+                    )}
+                </div>
+            );
+        },
+        'group-label': ({ data }: any) => (
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 8px'
+            }}>
+                <div style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: '#94a3b8'
+                }}></div>
+                <span style={{
+                    fontSize: '11px',
+                    fontWeight: '700',
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px'
+                }}>
+                    {data.label.replace('az:', '')}
+                </span>
+            </div>
+        )
+    }), []);
+
+    // Remap Types
+    const renderNodes = nodes.map(n => {
+        if (n.type === 'group') return { ...n, type: 'group' };
+        if (n.type === 'group-label') return n;
+        return { ...n, type: 'card' };
+    });
+
     return (
-        <div style={{ width: '100%', height: '600px', border: '1px solid #ccc', borderRadius: '8px', position: 'relative' }} onClick={() => setContextMenu(null)}>
+        <div style={{ width: '100%', height: '600px', border: '1px solid #e2e8f0', borderRadius: '12px', position: 'relative', overflow: 'hidden', background: '#f8fafc' }} onClick={() => setContextMenu(null)}>
+
             <ReactFlow
-                nodes={nodes}
+                nodes={renderNodes}
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
-                onEdgeClick={onEdgeClick}
+                nodeTypes={nodeTypes}
                 fitView
+                minZoom={0.1}
+                maxZoom={1.5}
+                attributionPosition="bottom-right"
             >
-                <Background />
-                <Controls />
+                <Background color="#cbd5e1" gap={20} size={1} />
+                <Controls showInteractive={false} />
             </ReactFlow>
 
-            {/* View Code Button */}
-            {terraformCode && (
+            {/* Toolbar: Refactor + Toggle Details */}
+            <div className="absolute top-4 right-36 z-10 flex gap-2">
                 <button
-                    onClick={(e) => { e.stopPropagation(); setShowCode(true); }}
-                    style={{
-                        position: 'absolute',
-                        top: '10px',
-                        right: '10px',
-                        zIndex: 10,
-                        backgroundColor: '#3b82f6',
-                        color: 'white',
-                        padding: '6px 12px',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer',
-                        border: 'none',
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                    }}
+                    onClick={(e) => { e.stopPropagation(); handleRefactorLayout(); }}
+                    disabled={isRefactoring}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md shadow-sm flex items-center gap-2 transition-colors
+                        ${layoutMode === 'professional'
+                            ? 'bg-purple-600 text-white hover:bg-purple-700 border border-purple-500'
+                            : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
+                        }
+                        ${isRefactoring ? 'opacity-70 cursor-wait' : ''}
+                    `}
                 >
-                    &lt;/&gt; View Code
+                    <Sparkles size={14} className={isRefactoring ? 'animate-spin' : ''} />
+                    {isRefactoring ? 'Refactoring...' : (layoutMode === 'professional' ? 'Reset Layout' : 'Refactor Layout')}
+                </button>
+
+                {layoutMode === 'professional' && (
+                    <button
+                        onClick={(e) => { e.stopPropagation(); setShowDetails(!showDetails); }}
+                        className="px-3 py-1.5 bg-slate-800 text-slate-300 rounded-md text-sm font-medium hover:bg-slate-700 shadow-sm flex items-center gap-2 border border-slate-600"
+                        title={showDetails ? "Hide Details (SGs, Policies)" : "Show All Details"}
+                    >
+                        {showDetails ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                )}
+
+                {/* Cost Calculation Button */}
+                <button
+                    onClick={handleCalculateCost}
+                    className="px-3 py-1.5 text-sm font-medium bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 rounded-md shadow-sm flex items-center gap-2 transition-colors"
+                >
+                    <DollarSign size={16} className="text-green-600" />
+                    <span>Calculate Cost</span>
+                </button>
+            </div>
+
+            {terraformCode && (
+                <button onClick={(e) => { e.stopPropagation(); setShowCode(true); }} className="absolute top-4 right-4 z-10 px-3 py-1.5 bg-slate-800 text-white rounded-md text-sm font-medium hover:bg-slate-900 shadow-sm flex items-center gap-2">
+                    <span>&lt;/&gt;</span> Terraform
                 </button>
             )}
 
-            {/* Code Modal */}
             {showCode && terraformCode && (
-                <div style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
-                    backgroundColor: 'rgba(0,0,0,0.85)',
-                    zIndex: 2000,
-                    padding: '20px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    backdropFilter: 'blur(4px)'
-                }} onClick={(e) => e.stopPropagation()}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', color: 'white' }}>
-                        <span style={{ fontWeight: 'bold' }}>Generated Terraform Code</span>
-                        <button
-                            onClick={() => setShowCode(false)}
-                            style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', fontSize: '14px' }}
-                        >
-                            ✕ Close
-                        </button>
+                <div className="absolute inset-0 bg-slate-900/90 z-50 p-6 flex flex-col" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex justify-between items-center text-white mb-4">
+                        <h3 className="font-bold text-lg">Terraform Code</h3>
+                        <button onClick={() => setShowCode(false)} className="text-slate-400 hover:text-white">✕</button>
                     </div>
-                    <div style={{
-                        flex: 1,
-                        overflow: 'auto',
-                        backgroundColor: '#1e293b',
-                        color: '#e2e8f0',
-                        padding: '16px',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
-                        border: '1px solid #334155'
-                    }}>
-                        <pre>{terraformCode}</pre>
-                    </div>
+                    <pre className="flex-1 bg-slate-950 p-4 rounded-lg overflow-auto text-sm font-mono text-emerald-400 border border-slate-800">{terraformCode}</pre>
                 </div>
             )}
 
-            {/* Pending Approval Banner (Legacy - Disabled for Unified Workflow) */}
-            {/*
-                isPendingApproval && (
-                    <div style={{
-                        position: 'absolute',
-                        top: '10px',
-                        left: '50%',
-                        transform: 'translateX(-50%)',
-                        backgroundColor: '#eff6ff',
-                        border: '1px solid #3b82f6',
-                        color: '#1e40af',
-                        padding: '8px 16px',
-                        borderRadius: '20px',
-                        fontWeight: 'bold',
-                        fontSize: '14px',
-                        zIndex: 10,
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '12px'
-                    }}>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontSize: '18px' }}>🤖</span> AI Proposed Changes
-                        </span>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                            <button
-                                onClick={async (e) => {
-                                    e.stopPropagation();
-                                    setIsProcessing(true);
-                                    try {
-                                        await approvePlan();
-                                        await refreshGraph();
-                                    } finally {
-                                        setIsProcessing(false);
-                                    }
-                                }}
-                                disabled={isProcessing}
-                                className={`flex items-center gap-1 px-3 py-1 bg-green-600 text-white rounded-full text-xs transition-colors ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'}`}
-                            >
-                                <Check size={14} /> {isProcessing ? 'Saving...' : 'Accept'}
-                            </button>
-                            <button
-                                onClick={async (e) => {
-                                    e.stopPropagation();
-                                    setIsProcessing(true);
-                                    try {
-                                        await rejectPlan();
-                                        await refreshGraph();
-                                    } finally {
-                                        setIsProcessing(false);
-                                    }
-                                }}
-                                disabled={isProcessing}
-                                className={`flex items-center gap-1 px-3 py-1 bg-red-600 text-white rounded-full text-xs transition-colors ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-700'}`}
-                            >
-                                <X size={14} /> {isProcessing ? 'Reverting...' : 'Reject'}
-                            </button>
-                        </div>
-                    </div>
-                )
-            */}
-
-            {/* Cost Badge */}
             {costReport && (
-                <div
-                    onClick={() => setShowCostModal(true)}
-                    style={{
-                        position: 'absolute',
-                        top: '10px',
-                        left: '10px', // Top Left to balance View Code which is Top Right
-                        zIndex: 10,
-                        backgroundColor: '#ecfdf5', // emerald-50
-                        border: '1px solid #10b981', // emerald-500
-                        color: '#047857', // emerald-700
-                        padding: '6px 12px',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer',
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                    }}
-                >
-                    <DollarSign size={14} /> Est. ${costReport.total_monthly_cost.toFixed(2)}/mo
+                <div onClick={() => setShowCostModal(true)} className="absolute bottom-4 left-4 z-10 bg-emerald-50 border border-emerald-200 text-emerald-700 px-3 py-1.5 rounded-md text-xs font-bold shadow-sm cursor-pointer flex items-center gap-1 hover:bg-emerald-100">
+                    <DollarSign size={14} /> ${costReport.total_monthly_cost.toFixed(2)}/mo
                 </div>
             )}
 
-            {/* Cost Breakdown Modal */}
             {showCostModal && costReport && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    width: '100vw',
-                    height: '100vh',
-                    backgroundColor: 'rgba(0,0,0,0.5)',
-                    zIndex: 3000, // Higher than code modal
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backdropFilter: 'blur(2px)'
-                }} onClick={() => setShowCostModal(false)}>
-                    <div style={{
-                        backgroundColor: '#fff',
-                        borderRadius: '12px',
-                        width: '500px',
-                        maxHeight: '80vh',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        overflow: 'hidden',
-                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
-                    }} onClick={e => e.stopPropagation()}>
-                        <div style={{ padding: '20px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#1e293b' }}>Monthly Cost Estimate</h3>
-                            <button onClick={() => setShowCostModal(false)} style={{ color: '#64748b' }}>✕</button>
+                <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={() => setShowCostModal(false)}>
+                    <div className="bg-white rounded-xl max-w-lg w-full max-h-[80vh] overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                            <h3 className="font-bold text-slate-800">Cost Breakdown</h3>
+                            <button onClick={() => setShowCostModal(false)} className="text-slate-400">✕</button>
                         </div>
-                        <div style={{ padding: '20px', overflowY: 'auto' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-                                <span>Total</span>
-                                <span>${costReport.total_monthly_cost.toFixed(2)}</span>
+                        <div className="p-6 overflow-y-auto max-h-[60vh]">
+                            <div className="flex justify-between items-end mb-6">
+                                <span className="text-sm text-slate-500">Total Monthly</span>
+                                <span className="text-3xl font-bold text-emerald-600">${costReport.total_monthly_cost.toFixed(2)}</span>
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div className="space-y-3">
                                 {costReport.breakdown.map((item, i) => (
-                                    <div key={i} style={{ padding: '12px', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', marginBottom: '4px', color: '#334155' }}>
-                                            <span>{item.resource_type} ({item.resource_id})</span>
+                                    <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+                                        <div className="flex justify-between font-medium text-slate-700 mb-1">
+                                            <span>{item.resource_type}</span>
                                             <span>${item.estimated_cost.toFixed(2)}</span>
                                         </div>
-                                        <div style={{ fontSize: '12px', color: '#64748b' }}>{item.explanation}</div>
+                                        <p className="text-xs text-slate-500">{item.explanation}</p>
                                     </div>
                                 ))}
                             </div>
-                            <div style={{ marginTop: '20px', fontSize: '10px', color: '#94a3b8', textAlign: 'center' }}>
-                                {costReport.disclaimer}
-                            </div>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* Context Menu Overlay */}
-            {
-                contextMenu && (
-                    <div
-                        style={{
-                            position: 'fixed',
-                            top: contextMenu.y,
-                            left: contextMenu.x,
-                            zIndex: 1000,
-                            backgroundColor: '#1e293b',
-                            border: '1px solid #475569',
-                            borderRadius: '6px',
-                            padding: '4px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '2px',
-                            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <button
-                            onClick={() => handleAction('details')}
-                            className="px-4 py-2 text-sm text-slate-200 hover:bg-slate-700 rounded text-left"
-                        >
-                            View {contextMenu.type === 'node' ? 'Resource' : 'Connection'} Details
-                        </button>
-                        <button
-                            onClick={() => handleAction('delete')}
-                            className="px-4 py-2 text-sm text-red-400 hover:bg-red-900/30 rounded text-left"
-                        >
-                            Simulate {contextMenu.type === 'node' ? 'Deletion' : 'One Cut'}
-                        </button>
-                    </div>
-                )
-            }
-            {/* Resource Details Modal */}
             {selectedDetailNode && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    width: '100vw',
-                    height: '100vh',
-                    backgroundColor: 'rgba(0,0,0,0.5)',
-                    zIndex: 3000,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backdropFilter: 'blur(2px)'
-                }} onClick={() => setSelectedDetailNode(null)}>
-                    <div style={{
-                        backgroundColor: '#1e293b',
-                        color: '#f8fafc',
-                        borderRadius: '12px',
-                        width: '600px',
-                        maxHeight: '80vh',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        overflow: 'hidden',
-                        border: '1px solid #334155',
-                        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
-                    }} onClick={e => e.stopPropagation()}>
-                        <div style={{ padding: '20px', borderBottom: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0f172a' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <div style={{ padding: '8px', backgroundColor: 'rgba(59, 130, 246, 0.2)', borderRadius: '8px' }}>
-                                    <span style={{ fontSize: '20px' }}>📦</span>
-                                </div>
-                                <div>
-                                    <h3 style={{ fontSize: '16px', fontWeight: 'bold' }}>{selectedDetailNode.id}</h3>
-                                    <div style={{ fontSize: '12px', color: '#94a3b8', fontFamily: 'monospace' }}>{selectedDetailNode.type}</div>
-                                </div>
-                            </div>
-                            <button onClick={() => setSelectedDetailNode(null)} style={{ color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px' }}>✕</button>
-                        </div>
-
-                        <div style={{ padding: '24px', overflowY: 'auto' }}>
-                            {/* Description Section */}
-                            <div style={{ marginBottom: '24px' }}>
-                                <h4 style={{ fontSize: '12px', textTransform: 'uppercase', fontWeight: 'bold', color: '#64748b', marginBottom: '8px', letterSpacing: '0.05em' }}>Description</h4>
-                                <p style={{ fontSize: '14px', color: '#cbd5e1', lineHeight: '1.6', backgroundColor: 'rgba(30, 41, 59, 0.5)', padding: '12px', borderRadius: '8px', border: '1px solid #334155' }}>
-                                    {selectedDetailNode.description}
-                                </p>
-                            </div>
-
-                            {/* Configuration Table */}
+                <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={() => setSelectedDetailNode(null)}>
+                    <div className="bg-white rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
                             <div>
-                                <h4 style={{ fontSize: '12px', textTransform: 'uppercase', fontWeight: 'bold', color: '#64748b', marginBottom: '8px', letterSpacing: '0.05em' }}>Configuration</h4>
-                                <div style={{ border: '1px solid #334155', borderRadius: '8px', overflow: 'hidden' }}>
-                                    <table style={{ width: '100%', fontSize: '14px', borderCollapse: 'collapse' }}>
-                                        <thead style={{ backgroundColor: '#1e293b', color: '#94a3b8', textTransform: 'uppercase', fontSize: '12px' }}>
-                                            <tr>
-                                                <th style={{ padding: '8px 16px', borderBottom: '1px solid #334155', textAlign: 'left' }}>Property</th>
-                                                <th style={{ padding: '8px 16px', borderBottom: '1px solid #334155', textAlign: 'left' }}>Value</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {selectedDetailNode.properties && Object.entries(selectedDetailNode.properties).map(([key, value], i) => (
-                                                <tr key={key} style={{ borderBottom: '1px solid #334155', backgroundColor: i % 2 === 0 ? '#0f172a' : '#1e293b' }}>
-                                                    <td style={{ padding: '8px 16px', fontFamily: 'monospace', color: '#93c5fd' }}>{key}</td>
-                                                    <td style={{ padding: '8px 16px', color: '#cbd5e1', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                                                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                            {(!selectedDetailNode.properties || Object.keys(selectedDetailNode.properties).length === 0) && (
-                                                <tr>
-                                                    <td colSpan={2} style={{ padding: '16px', textAlign: 'center', color: '#64748b', fontStyle: 'italic' }}>No specific configuration properties.</td>
-                                                </tr>
-                                            )}
-                                        </tbody>
-                                    </table>
-                                </div>
+                                <h3 className="font-bold text-slate-800">{selectedDetailNode.id}</h3>
+                                <span className="text-xs font-mono text-slate-500">{selectedDetailNode.type}</span>
+                            </div>
+                            <button onClick={() => setSelectedDetailNode(null)} className="text-slate-400 hover:text-red-500">✕</button>
+                        </div>
+                        <div className="p-6 overflow-y-auto">
+                            <div className="bg-slate-900 rounded-lg p-4 overflow-x-auto">
+                                <pre className="text-xs font-mono text-blue-300">{JSON.stringify(selectedDetailNode.properties, null, 2)}</pre>
                             </div>
                         </div>
                     </div>
                 </div>
             )}
 
-        </div >
+            {contextMenu && (
+                <div style={{ top: contextMenu.y, left: contextMenu.x }} className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[160px]">
+                    <button onClick={() => handleAction('details')} className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">View Details</button>
+                    <button onClick={() => handleAction('delete')} className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">Simulate Cut</button>
+                </div>
+            )}
+        </div>
     );
 }

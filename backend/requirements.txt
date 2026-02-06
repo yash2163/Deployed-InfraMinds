@@ -4,5 +4,5 @@ networkx
 pydantic
 python-multipart
 requests
-google-generativeai
+google-genai
 python-dotenv
