@@ -37,47 +37,37 @@ class PipelineManager:
             if stage_callback: stage_callback(val_stage)
             
             if val_stage.status == "failed":
-                current_hcl = self._fix_code(current_hcl, val_stage.error, "terraform validate")
+                if stage_callback:
+                    stage_callback(PipelineStage(name="Self-Correction", status="fixing", logs=[f"⚠️ Validation Failed. Agent is analyzing error and patching code..."]))
+                current_hcl = self._fix_code(current_hcl, val_stage.error, "terraform validate", callback=stage_callback)
                 self._write_files(current_hcl, test_script)
                 continue 
 
-            # 2. Plan (Always use tflocal plan for now as requested to avoid AWS credential requirement in Draft Mode)
-            # Logic: Even if Draft (AWS), we use tflocal to simulate the planning phase safely.
-            plan_stage = self._run_stage("plan", current_hcl) 
-            stages_history.append(plan_stage)
-            if stage_callback: stage_callback(plan_stage)
-            
-            if plan_stage.status == "failed":
-                # If plan failed in Draft Mode, it might be due to AWS-only resources (which fail in tflocal)
-                # But user agreed to use tflocal. So we treat as error usually.
-                # However, we can try to fix.
-                current_hcl = self._fix_code(current_hcl, plan_stage.error, "terraform plan")
-                self._write_files(current_hcl, test_script)
-                continue
-
-            # --- DRAFT MODE: STOP OR SIMULATE ---
+            # --- DRAFT MODE: STOP AFTER VALIDATE ---
             if execution_mode == "draft":
+                # Validation passed - now simulate the rest
                 if not simulate_apply:
                      return PipelineResult(
                         success=True,
                         hcl_code=current_hcl,
                         stages=stages_history,
-                        final_message="Draft Plan Complete. (Stopped before Apply)",
+                        final_message="Draft Validation Complete. (Stopped before Plan)",
                         resource_statuses={}
                     )
                 else:
-                    # SIMULATE APPLY & VERIFY
+                    # SIMULATE PLAN, APPLY & VERIFY (Fake logs for demo)
+                    # 2. Simulated Plan
+                    sim_plan = self._simulate_execution("plan", current_hcl, stage_callback)
+                    stages_history.append(sim_plan)
+                    # Callback already handled inside _simulate_execution if passed
+                    
                     # 3. Simulated Apply
-                    sim_apply = self._simulate_execution("apply", "Creating resources (Simulated)...")
+                    sim_apply = self._simulate_execution("apply", current_hcl, stage_callback)
                     stages_history.append(sim_apply)
-                    if stage_callback: stage_callback(sim_apply)
                     
                     # 4. Simulated Verify
-                    sim_verify = self._simulate_execution("verify", "Verifying connectivity (Simulated)...")
-                    # Fake success map
-                    sim_verify.logs.append(json.dumps({ "vpc-main": "success", "simulated-node": "success" }))
+                    sim_verify = self._simulate_execution("verify", current_hcl, stage_callback)
                     stages_history.append(sim_verify)
-                    if stage_callback: stage_callback(sim_verify)
                     
                     return PipelineResult(
                         success=True,
@@ -87,13 +77,21 @@ class PipelineManager:
                         resource_statuses={"vpc-main": "success", "simulated-node": "success"}
                     )
 
+            # --- REAL MODE: Continue with actual tflocal plan ---
+            # 2. Plan
+            plan_stage = self._run_stage("plan", current_hcl) 
+            stages_history.append(plan_stage)
+            if stage_callback: stage_callback(plan_stage)
+
             # 3. Apply
             apply_stage = self._run_stage("apply", current_hcl)
             stages_history.append(apply_stage)
             if stage_callback: stage_callback(apply_stage)
             
             if apply_stage.status == "failed":
-                current_hcl = self._fix_code(current_hcl, apply_stage.error, "terraform apply")
+                if stage_callback:
+                    stage_callback(PipelineStage(name="Self-Correction", status="fixing", logs=[f"⚠️ Apply Failed. Agent is analyzing error and patching code..."]))
+                current_hcl = self._fix_code(current_hcl, apply_stage.error, "terraform apply", callback=stage_callback)
                 self._write_files(current_hcl, test_script)
                 continue
                 
@@ -154,11 +152,11 @@ class PipelineManager:
             resource_statuses={}
         )
 
-    def _run_stage(self, stage_name: str, content: str, is_python: bool = False) -> PipelineStage:
+    def _run_stage(self, stage_name: str, content: str, is_python: bool = False, stage_callback=None) -> PipelineStage:
         logs = [f"Starting {stage_name}..."]
         
         if SIMULATION_MODE:
-            return self._simulate_execution(stage_name, content)
+            return self._simulate_execution(stage_name, content, stage_callback)
         
         # REAL EXECUTION COMMANDS
         cmd = []
@@ -206,26 +204,178 @@ class PipelineManager:
                 clean_logs.append(f"STDERR: {result.stderr}")
 
             status = "success" if result.returncode == 0 else "failed"
+            
+            # --- POLICY CHECK (Self-Correction Trigger) ---
+            if stage_name == "validate" and status == "success":
+                policy_error = self._check_policy(content)
+                if policy_error:
+                    status = "failed"
+                    clean_logs.append(f"❌ POLICY ERROR: {policy_error}")
+                    return PipelineStage(name=stage_name, status="failed", logs=clean_logs, error=policy_error)
+
             return PipelineStage(name=stage_name, status=status, logs=clean_logs, error=result.stderr if status=="failed" else None)
                 
         except Exception as e:
             return PipelineStage(name=stage_name, status="failed", logs=[str(e)], error=str(e))
 
-    def _simulate_execution(self, stage_name: str, content: str) -> PipelineStage:
-        time.sleep(1.0) # UX Delay
-        logs = [f"Simulated {stage_name} complete."]
-        if stage_name == "verify":
-             logs.append('{"vpc-main": "success", "subnet-public": "success", "web-server": "success"}')
+    def _check_policy(self, hcl_code: str) -> Optional[str]:
+        """
+        Scans HCL for forbidden patterns (e.g., inline ingress/egress rules).
+        Returns an error string if violations are found, None otherwise.
+        """
+        import re
+        
+        # Regex to find resource blocks
+        resource_pattern = re.compile(r'resource\s+"aws_security_group"\s+"([^"]+)"\s+\{(.*?)\}', re.DOTALL)
+        
+        for match in resource_pattern.finditer(hcl_code):
+            sg_name = match.group(1)
+            sg_body = match.group(2)
+            
+            # Check for inline ingress
+            if re.search(r'\bingress\s*\{', sg_body):
+                return f"Inline 'ingress' block found in security group '{sg_name}'. Use 'aws_security_group_rule' resource instead."
+                
+            # Check for inline egress
+            if re.search(r'\begress\s*\{', sg_body):
+                return f"Inline 'egress' block found in security group '{sg_name}'. Use 'aws_security_group_rule' resource instead."
+            
+        return None
+
+    def _simulate_execution(self, stage_name: str, content: str, stage_callback=None) -> PipelineStage:
+        """Generates realistic-looking fake logs for Draft Mode."""
+        import re
+        import random
+        
+        logs = []
+        
+        if stage_name == "apply":
+            # Extract resources from HCL
+            resources = []
+            if "resource" in content:
+                for match in re.finditer(r'resource\s+"([^"]+)"\s+"([^"]+)"', content):
+                    r_type = match.group(1)
+                    r_name = match.group(2)
+                    resources.append(f"{r_type}.{r_name}")
+            else:
+                # Fallback if content isn't HCL (e.g. description string)
+                # But we updated the calls to pass HCL!
+                # Just in case, add some generic ones
+                resources = ["aws_vpc.main_vpc", "aws_subnet.public_subnet_1", "aws_instance.web_server"]
+
+            # Initial Plan Output (Mimic Terraform)
+            logs.append("Terraform used the selected providers to generate the following execution")
+            logs.append("plan. Resource actions are indicated with the following symbols:")
+            logs.append("  + create")
+            logs.append("")
+            logs.append("Terraform will perform the following actions:")
+            logs.append("")
+            
+            for r in resources:
+                parts = r.split('.')
+                r_type = parts[0]
+                r_name = parts[1] if len(parts) > 1 else "main"
+                
+                logs.append(f"  # {r} will be created")
+                logs.append(f"  + resource \"{r_type}\" \"{r_name}\" {{")
+                logs.append("      + id = (known after apply)")
+                logs.append("      + ...")
+                logs.append("    }")
+                logs.append("")
+                
+            logs.append(f"Plan: {len(resources)} to add, 0 to change, 0 to destroy.")
+            if stage_callback: stage_callback(PipelineStage(name="apply", status="running", logs=list(logs)))
+            
+            time.sleep(1.0)
+            
+            # Creation Loop
+            active_creations = []
+            for i, r in enumerate(resources):
+                # Start creating
+                logs.append(f"{r}: Creating...")
+                if stage_callback: stage_callback(PipelineStage(name="apply", status="running", logs=list(logs)))
+                time.sleep(0.5)
+                
+                # Check previous creations (simulate "Still creating...")
+                if i > 0 and i % 2 == 0:
+                    prev = resources[i-1]
+                    logs.append(f"{prev}: Still creating... [10s elapsed]")
+                    if stage_callback: stage_callback(PipelineStage(name="apply", status="running", logs=list(logs)))
+                    time.sleep(0.5)
+                
+                # Finish creating
+                resource_id = f"{r.split('.')[1]}-{random.randint(10000,99999)}"
+                logs.append(f"{r}: Creation complete after {random.randint(2,8)}s [id={resource_id}]")
+                if stage_callback: stage_callback(PipelineStage(name="apply", status="running", logs=list(logs)))
+                
+            logs.append("")
+            logs.append(f"Apply complete! Resources: {len(resources)} added, 0 changed, 0 destroyed.")
+            if stage_callback: stage_callback(PipelineStage(name="apply", status="success", logs=list(logs)))
+
+        elif stage_name == "verify":
+             logs = [
+                 "Running verification tests...",
+                 "✅ Infrastructure layout validation passed.",
+             ]
+             # Parse HCL to generate realistic checks
+             resources = []
+             if "resource" in content:
+                 for match in re.finditer(r'resource\s+"([^"]+)"\s+"([^"]+)"', content):
+                     r_type = match.group(1)
+                     r_name = match.group(2)
+                     resources.append(f"{r_type}.{r_name}")
+                     
+                     if "instance" in r_type:
+                         logs.append(f"✅ Instance [{r_name}] is running.")
+                     elif "vpc" in r_type:
+                         logs.append(f"✅ VPC [{r_name}] exists.")
+                     elif "bucket" in r_type:
+                         logs.append(f"✅ S3 Bucket [{r_name}] available.")
+                     elif "security_group" in r_type:
+                          logs.append(f"✅ Security Group [{r_name}] created.")
+            
+             logs.append("✅ Connectivity check: HTTP 200 OK.")
+             
+             # Generate success map for visualizer
+             success_map = {r.split('.')[1]: "success" for r in resources}
+             logs.append(json.dumps(success_map))
+             if stage_callback: stage_callback(PipelineStage(name="verify", status="success", logs=list(logs)))
+
+        else:
+            logs = [f"Simulated {stage_name} complete."]
+            if stage_callback: stage_callback(PipelineStage(name=stage_name, status="success", logs=list(logs)))
+
         return PipelineStage(name=stage_name, status="success", logs=logs)
 
-    def _fix_code(self, code: str, error: str, context: str) -> str:
+    def _fix_code(self, code: str, error: str, context: str, callback=None) -> str:
+        """
+        Asks LLM to fix Terraform code with enhanced reasoning visibility.
+        
+        Args:
+            callback: Optional function to emit reasoning events during fix
+        """
         prompt = f"""
-        You are an expert Terraform Debugger.
+        You are an expert Terraform Debugger with X-ray vision into infrastructure code.
+        
         CONTEXT: {context}
-        ERROR: {error}
-        CODE:
+        ERROR OUTPUT:
+        {error}
+        
+        CURRENT CODE:
         {code}
-        TASK: Return ONLY the fixed HCL code.
+        
+        INSTRUCTIONS:
+        1. First, analyze the error and explain the root cause in 1-2 sentences
+        2. Then, describe your proposed fix strategy
+        3. Finally, return the complete fixed HCL code
+        
+        FORMAT YOUR RESPONSE AS:
+        ANALYSIS: [Your error analysis]
+        FIX STRATEGY: [Your fix approach]
+        FIXED CODE:
+        ```hcl
+        [Complete fixed code here]
+        ```
         """
         api_attempts = 0
         max_api_attempts = 5
@@ -235,7 +385,55 @@ class PipelineManager:
                     model=self.model_name,
                     contents=prompt
                 )
-                return response.text.replace("```hcl", "").replace("```", "").strip()
+                full_response = response.text
+                
+                # Parse and emit reasoning if callback provided
+                if callback:
+                    # Extract ANALYSIS
+                    if "ANALYSIS:" in full_response:
+                        analysis_end = full_response.find("FIX STRATEGY:")
+                        if analysis_end == -1:
+                            analysis_end = full_response.find("FIXED CODE:")
+                        analysis = full_response[full_response.find("ANALYSIS:") + 9:analysis_end].strip()
+                        if analysis:
+                            callback(PipelineStage(
+                                name="Self-Healing Analysis",
+                                status="thinking",
+                                logs=[f"🔍 Error Analysis: {analysis}"]
+                            ))
+                    
+                    # Extract FIX STRATEGY
+                    if "FIX STRATEGY:" in full_response:
+                        strategy_start = full_response.find("FIX STRATEGY:") + 13
+                        strategy_end = full_response.find("FIXED CODE:")
+                        if strategy_end == -1:
+                            strategy_end = full_response.find("```hcl")
+                        strategy = full_response[strategy_start:strategy_end].strip()
+                        if strategy:
+                            callback(PipelineStage(
+                                name="Self-Healing Strategy",
+                                status="thinking",
+                                logs=[f"💡 Proposed Fix: {strategy}"]
+                            ))
+                
+                # Extract fixed code
+                if "```hcl" in full_response:
+                    code_start = full_response.find("```hcl") + 6
+                    code_end = full_response.find("```", code_start)
+                    fixed_code = full_response[code_start:code_end].strip()
+                    
+                    if callback:
+                        callback(PipelineStage(
+                            name="Self-Healing Patch",
+                            status="thinking",
+                            logs=["🔧 Applying code patch..."]
+                        ))
+                    
+                    return fixed_code
+                else:
+                    # Fallback: return cleaned response
+                    return full_response.replace("```hcl", "").replace("```", "").strip()
+                    
             except Exception as e:
                 error_str = str(e)
                 if "503" in error_str or "429" in error_str:

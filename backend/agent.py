@@ -8,6 +8,8 @@ from typing import List, Dict, Optional, Generator, Any
 import uuid
 import hashlib
 import time
+import threading
+import queue
 
 from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastAnalysis, CodeReview, ConfirmationRequired, ConfirmationReason, SessionState
 from prompts.localstack import get_think_prompt, get_plan_prompt, get_code_gen_prompt
@@ -148,6 +150,27 @@ class InfraAgent:
                     
         except Exception as e:
             print(f"Error loading state: {e}")
+
+    def hard_reset(self):
+        """Completely wipes the agent's memory and state."""
+        # 1. Clear NetworkX Implementation Graph
+        self.graph.clear()
+        
+        # 2. Clear Lifecycle Graphs
+        self.intent_graph = None
+        self.reasoned_graph = None
+        self.implementation_graph = None
+        
+        # 3. Clear Logs & History
+        self.decision_log = []
+        self.history = []
+        
+        # 4. Reset Session
+        self.session = SessionState(phase="idle")
+        
+        # 5. Persist empty state to disk (wipe files)
+        self.save_state_to_disk()
+        print("DEBUG: Hard Reset Complete. All states wiped.")
 
     def load_nx_graph(self, state: GraphState):
         """Rebuilds the efficient NetworkX graph from Implementation state."""
@@ -649,6 +672,8 @@ class InfraAgent:
             api_attempts = 0
             max_api_attempts = 5
             
+            print(f"DEBUG: Starting Intent Stream. Model: {self.model_name}")
+            
             while api_attempts < max_api_attempts:
                 try:
                     response = self.client.models.generate_content_stream(
@@ -656,15 +681,20 @@ class InfraAgent:
                         contents=content_payload
                     )
                     
+                    print("DEBUG: Stream connection established. Waiting for chunks...")
+                    chunk_count = 0
                     for chunk in response:
                         text = chunk.text
                         if not text: continue
+                        chunk_count += 1
                         full_text += text
+                        print(f"DEBUG: Chunk {chunk_count} received ({len(text)} chars)")
                         
                         # SANITIZED: Do NOT leak thoughts directly.
                         if "THOUGHT:" in text: pass
                         if "{" in text: is_json = True
                     
+                    print(f"DEBUG: Stream Complete. Total text length: {len(full_text)}")
                     # Success
                     break
                     
@@ -1111,20 +1141,46 @@ class InfraAgent:
                      current_test = data.get("test_script", "# No verification script generated")
                  except Exception as json_err:
                      print(f"DEBUG: JSON Parse Error: {json_err}")
-                     print(f"DEBUG: Trying regex extraction fallback...")
+                     print(f"DEBUG: Trying to extract first valid JSON object...")
                      
-                     # Fallback: Extract using regex (handles unescaped quotes in strings)
+                     # Strategy: Find the first opening brace and try to extract a valid JSON object
+                     # by matching braces to find where it ends
                      import re
-                     hcl_match = re.search(r'"hcl_code"\s*:\s*"(.*?)"\s*,\s*"test_script"', text, re.DOTALL)
-                     test_match = re.search(r'"test_script"\s*:\s*"(.*?)"\s*}?\s*$', text, re.DOTALL)
                      
-                     if hcl_match:
-                         current_code = hcl_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                         print(f"DEBUG: Extracted HCL code ({len(current_code)} chars)")
-                     
-                     if test_match:
-                         current_test = test_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                         print(f"DEBUG: Extracted test script ({len(current_test)} chars)")
+                     # Try to find and extract just the JSON object (handles extra text after)
+                     start_idx = text.find('{')
+                     if start_idx != -1:
+                         brace_count = 0
+                         end_idx = start_idx
+                         for i in range(start_idx, len(text)):
+                             if text[i] == '{':
+                                 brace_count += 1
+                             elif text[i] == '}':
+                                 brace_count -= 1
+                                 if brace_count == 0:
+                                     end_idx = i + 1
+                                     break
+                         
+                         if end_idx > start_idx:
+                             json_text = text[start_idx:end_idx]
+                             try:
+                                 data = json.loads(json_text)
+                                 current_code = data.get("hcl_code", "")
+                                 current_test = data.get("test_script", "# No verification script generated")
+                                 print(f"DEBUG: Successfully extracted JSON object (ended at char {end_idx})")
+                             except Exception as parse_err:
+                                 print(f"DEBUG: Failed to parse extracted JSON: {parse_err}")
+                                 # Fall back to regex
+                                 hcl_match = re.search(r'"hcl_code"\s*:\s*"(.*?)"\s*,\s*"test_script"', text, re.DOTALL)
+                                 test_match = re.search(r'"test_script"\s*:\s*"(.*?)"', text, re.DOTALL)
+                                 
+                                 if hcl_match:
+                                     current_code = hcl_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                                     print(f"DEBUG: Extracted HCL code via regex ({len(current_code)} chars)")
+                                 
+                                 if test_match:
+                                     current_test = test_match.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                                     print(f"DEBUG: Extracted test script via regex ({len(current_test)} chars)")
                      
                      if not current_code:
                          print(f"DEBUG: First 500 chars: {text[:500]}")
@@ -1163,6 +1219,17 @@ class InfraAgent:
                      # Regex to remove "ingress { ... }" blocks (non-nested)
                      current_code = re.sub(r'(ingress|egress)\s*\{[^}]*\}', '', current_code)
                  
+                 # Fix 5: Remove tags from aws_route_table_association (not supported)
+                 if 'resource "aws_route_table_association"' in current_code:
+                     print("WARNING: Removing tags from aws_route_table_association resources (not supported)")
+                     # Remove tags blocks from route table associations
+                     current_code = re.sub(
+                         r'(resource\s+"aws_route_table_association"[^{]*\{[^}]*?)\s*tags\s*=\s*\{[^}]*\}\s*',
+                         r'\1',
+                         current_code,
+                         flags=re.DOTALL
+                     )
+                 
                  if current_code != original_code:
                      print("DEBUG: Applied automatic fixes to generated code")
                      yield send("log", "🔧 Auto-fixed common code generation errors")
@@ -1173,29 +1240,66 @@ class InfraAgent:
                  # If Draft, maybe we only Validate/Plan?
                  # For now, run full pipeline but rely on its internal flow
                  # Pass simulation flag from session
-                 try:
-                     res = self.pipeline.run_pipeline(
-                         current_code, 
-                         current_test, 
-                         execution_mode=execution_mode,
-                         simulate_apply=getattr(self.session, "simulate_pipeline", True) # Default safety
-                     )
-                 except Exception as e:
-                     yield send("error", f"Pipeline Crash: {e}")
-                     import traceback
-                     traceback.print_exc()
+                 # Pipeline Check
+                 yield send("stage", {"name": "Pipeline Verification", "status": "running"})
+                 
+                 # Threaded Pipeline Execution to stream events
+                 result_container = {"res": None, "error": None}
+                 q = queue.Queue()
+
+                 def pipeline_runner():
+                     try:
+                         sim_flag = getattr(self.session, "simulate_pipeline", True)
+                         res = self.pipeline.run_pipeline(
+                             current_code, 
+                             current_test, 
+                             execution_mode=execution_mode,
+                             simulate_apply=sim_flag,
+                             stage_callback=lambda stage: q.put(stage)
+                         )
+                         result_container["res"] = res
+                     except Exception as e:
+                         result_container["error"] = e
+                         import traceback
+                         traceback.print_exc()
+                     finally:
+                         q.put(None) # Sentinel
+
+                 # Start pipeline in thread
+                 t = threading.Thread(target=pipeline_runner)
+                 t.start()
+
+                 # Stream events from queue
+                 while True:
+                     item = q.get()
+                     if item is None: break # Sentinel received
+                     
+                     stage = item # PipelineStage object
+                     
+                     # Visualize Self-Healing
+                     if stage.status == "fixing":
+                          # Flashy Logs for fixes
+                          for log in stage.logs:
+                               yield send("log", f"🛠️ {log}")
+                     else:
+                          # Standard Stage Status
+                          yield send("log", f"[{stage.name}] {stage.status}")
+                          if stage.error:
+                               print(f"DEBUG STAGE ERROR: {stage.name} -> {stage.error}")
+                               # Optional: Send error to UI log?
+                               # yield send("log", f"❌ {stage.error[:100]}...")
+
+                 t.join()
+                 
+                 if result_container["error"]:
+                     yield send("error", f"Pipeline Crash: {result_container['error']}")
                      return
                  
-                 # Emit logs
-                 for stage in res.stages:
-                     yield send("log", f"[{stage.name}] {stage.status}")
-                     if stage.error: 
-                         print(f"DEBUG STAGE ERROR: {stage.name} -> {stage.error}")
-                         yield send("decision", {
-                             "rule": "Terraform Validation", 
-                             "action": "Correction Needed", 
-                             "result": f"Error in {stage.name}"
-                         })
+                 res = result_container["res"]
+                 # Log final Summary (re-emit history if needed, but we streamed it live!)
+                 # Only emit critical failures for context if not already shown
+
+
                  
                  if res.success:
                      success = True
@@ -1220,17 +1324,11 @@ class InfraAgent:
             yield send("error", f"CRITICAL AGENT ERROR: {str(e)}")
 
     def think_stream(self, user_prompt: str, execution_mode: str = "deploy"):
-        # Simple intent analysis for "Think" button
-        def send(type_, content): return json.dumps({"type": type_, "content": content}) + "\n"
-        yield send("log", "Analyzing Request...")
-        intent_graph = self.generate_intent(user_prompt)
-        
-        analysis = IntentAnalysis(
-            summary=f"Detected {len(intent_graph.resources)} components.",
-            risks=["None detected yet (Phase 1)"],
-            suggested_actions=["Proceed to Reasoning"]
-        )
-        yield send("result", analysis.model_dump())
+        """
+        Unified Entry Point for Text-to-Architecture (Thinking Phase).
+        Delegates to the robust streaming generator 'generate_intent_stream'.
+        """
+        yield from self.generate_intent_stream(user_prompt)
 
     def simulate_blast_radius(self, target_node_id: str) -> List[str]:
         """

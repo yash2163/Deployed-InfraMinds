@@ -83,41 +83,68 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
            - Instances must be attached to Subnets.
            - DBs must have Subnet Groups.
         4. **Refinement:** If the Graph shows a 'connects_to' edge between Web and DB, implement this as a Security Group Rule allowing traffic on port 3306.
-        5. **LocalStack Free Tier**: 
-           - **ALLOWED**: EC2, S3, DynamoDB, Lambda, API Gateway, SQS, SNS, Kinesis, IAM, CloudWatch.
-           - **PROHIBITED**: `aws_lb`, `aws_db_instance` (RDS), `aws_elasticache_cluster`, `aws_eks_cluster`, `aws_autoscaling_group`, `aws_launch_template`.
-           - **Action**: If Graph State contains prohibited resources, DO NOT generate code for them. Instead, add a comment in the HCL: `# Resource omitted: <id> (Not supported in Free Tier)`.
+        5. **FULL AWS MODE (DRAFT)**: 
+           - **ALLOWED**: ALL AWS Services are allowed (RDS, EKS, ALB, Route53, CloudFront, etc.).
+           - **Action**: Generate valid AWS HCL for these resources.
            - **HA Strategy**: For High Availability, generate multiple `aws_instance` resources (e.g. web_1, web_2) in different availability zones.
-           - **Load Balancing Strategy**: If user wants LB, do NOT generate `aws_lb`. Just generate the backend instances.
-        6. **Secrets**: NEVER hardcode passwords. Use `variable` with `sensitive = true` or `random_password` resource. If you verify a hardcoded password like "please_change_this_password", you MUST fix it to use a variable.
+           - **Load Balancing**: Generating `aws_lb` is ENCOURAGED if requested.
+        6. **Secrets**: NEVER hardcode passwords. Use `variable` with `sensitive = true` or `random_password` resource. 
         7. **Cardinality**: STRICTLY follow the user's requested quantity. If "an instance", generate ONE. Do not assume HA.
         8. **Web Servers**: If the user asks for a web server, you MUST include `user_data` (base64 encoded if needed, or raw heredoc) to install Apache/Nginx.
-        9. **HA Networking**: If requesting "High Availability", ensure you create 1 NAT Gateway PER Availability Zone (e.g. nat_a in us-east-1a, nat_b in us-east-1b) and separate Route Tables for each private subnet. Avoid Single Points of Failure.
+        9. **HA Networking**: If requesting "High Availability", ensure you create 1 NAT Gateway PER Availability Zone.
+
+2. **CRITICAL SECURITY GROUP RULES (READ CAREFULLY!)**
+   - **FORBIDDEN:** NEVER EVER use inline `ingress` or `egress` blocks inside `aws_security_group` resources
+   - **MANDATORY:** ALWAYS generate separate `aws_security_group_rule` resources for each rule
+   - **REQUIREMENT:** For each security group, generate at least one corresponding rule
+   - **Example FORBIDDEN pattern:**
+     ```hcl
+     resource "aws_security_group" "web" {{
+       ingress {{  # ❌ DO NOT DO THIS - Will cause cycles
+         from_port = 80
+         ...
+       }}
+     }}
+     ```
+   - **Example REQUIRED pattern:**
+     ```hcl
+     resource "aws_security_group" "web" {{
+       vpc_id = aws_vpc.main.id
+       name   = "web-sg"
+       # NO inline rules here
+     }}
+     
+     resource "aws_security_group_rule" "web_ingress_http" {{  # ✅ DO THIS
+       type              = "ingress"
+       from_port         = 80
+       to_port           = 80
+       protocol          = "tcp"
+       cidr_blocks       = ["0.0.0.0/0"]
+       security_group_id = aws_security_group.web.id
+     }}
+     
+     resource "aws_security_group_rule" "web_egress_all" {{  # ✅ Always add egress
+       type              = "egress"
+       from_port         = 0
+       to_port           = 0
+       protocol          = "-1"
+       cidr_blocks       = ["0.0.0.0/0"]
+       security_group_id = aws_security_group.web.id
+     }}
+     ```
 
 3. **HCL FORMATTING & STRINGS**
    - **FORBIDDEN:** Single-line blocks like `rule {{ ... }}`. Use multi-line.
    - **FORBIDDEN:** Invalid escape sequences. Use `\\` for backslashes.
-   - **JS/SHELL TEMPLATES:** You MUST escape `${{...}}` as `$${{...}}` if it is NOT a Terraform variable (e.g., JS template literals).
-     - ❌ WRONG: `console.log(\`Server running at ${{port}}\`);` (Terraform thinks 'port' is a resource)
-     - ✅ RIGHT: `console.log(\`Server running at $${{port}}\`);` (Literal JS interpolation)
+   - **JS/SHELL TEMPLATES:** You MUST escape `${{...}}` as `$${{...}}` if it is NOT a Terraform variable.
 
 4. **RESOURCE SPECIFIC RESTRICTIONS**
-   - **NO TAGS:** Do NOT add `tags` to: `aws_route`, `aws_security_group_rule`, `aws_apigatewayv2_integration`.
-   - **ARCHIVE FILE:** `data "archive_file"` does NOT support `source_content` block. Use `source` block:
-     ```hcl
-     data "archive_file" "lambda" {{
-       type        = "zip"
-       output_path = "lambda.zip"
-       source {{
-         content  = "exports.handler = ..."
-         filename = "index.js"
-       }}
-     }}
-     ```
+   - **NO TAGS:** Do NOT add `tags` to: `aws_route`, `aws_security_group_rule`.
+   - **ARCHIVE FILE:** Use `source {{ content = ... filename = ... }}` for `archive_file`.
 
-5. **LOCALSTACK FREE TIER COMPATIBILITY**
-   - **OMIT:** `aws_lb`, `aws_db_instance` (RDS), `aws_elasticache_cluster`, `aws_eks_cluster`.
-   - **USE:** `aws_instance` (EC2), `aws_dynamodb_table`, `aws_s3_bucket`, `aws_lambda_function`.
+5. **VERIFICATION**:
+   - Ensure provider block syntax is standard.
+   - Ensure NO deprecated S3 arguments.
 
 --- REQUIRED PROVIDER BLOCK (DO NOT MODIFY) ---
 ```hcl
@@ -136,32 +163,23 @@ terraform {{
 
 provider "aws" {{
   region                      = "us-east-1"
-  access_key                  = "test"
-  secret_key                  = "test"
+  access_key                  = "mock_access_key"
+  secret_key                  = "mock_secret_key"
   skip_credentials_validation = true
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
-
-  endpoints {{
-    ec2        = "http://localhost:4566"
-    s3         = "http://localhost:4566"
-    dynamodb   = "http://localhost:4566"
-    lambda     = "http://localhost:4566"
-    iam        = "http://localhost:4566"
-    apigateway = "http://localhost:4566"
-    sqs        = "http://localhost:4566"
-    sns        = "http://localhost:4566"
-    cloudwatch = "http://localhost:4566"
-  }}
+  # Note: No endpoint overrides - utilizing Standard AWS Provider defaults for syntax validation
 }}
 ```
 
 **FINAL VALIDATION - Before returning your code, verify:**
-✅ Provider block has EXACTLY 9 arguments arguments (region, access_key, secret_key, 3x skip_, endpoints)
+✅ Provider block matches the standard AWS block above
 ✅ NO `s3_force_path_style` line exists anywhere
 ✅ NO `s3_use_path_style` line exists anywhere
-✅ NO `tags` on `aws_route` or `aws_apigatewayv2_integration`
-✅ `data "archive_file"` uses `source {{ content = ... filename = ... }}` NOT `source_content` block
+✅ NO `tags` on `aws_route`
+✅ `data "archive_file"` uses `source {{{{ content = ... }}}}`
+✅ NO inline `ingress`/`egress` blocks in `aws_security_group` resources
+✅ Every `aws_security_group` has at least one `aws_security_group_rule`
 ANY violation will cause pipeline failure!
 
         --- VERIFICATION SCRIPT GUIDELINES ---
@@ -195,3 +213,5 @@ ANY violation will cause pipeline failure!
           }}))
           ```
     """
+
+    

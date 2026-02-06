@@ -62,11 +62,8 @@ def get_graph():
 @app.post("/graph/reset")
 def reset_graph():
     """Clears the graph state and session history."""
-    agent.graph.clear()
-    agent.session.phase = "idle"
-    agent.session.pending_plan = None
-    agent.history = []  # Clear conversation history
-    agent.save_state_to_disk()
+    agent.hard_reset()
+    return {"message": "Graph and Session HARD RESET complete"}
     return {"message": "Graph and Session reset"}
 
 @app.get("/cost", response_model=CostReport)
@@ -310,35 +307,7 @@ async def approve_intent(request: PromptRequest):
         media_type="application/x-ndjson"
     )
 
-@app.post("/agent/deploy")
-async def agent_deploy(request: PromptRequest):
-    """
-    Phase 3: Code Generation & Deployment.
-    """
-    async def wrapper():
-        try:
-            # Note: stream_terraform_gen is synchronous, so we iterate it synchronously
-            # But inside an async wrapper, this blocks the loop? 
-            # Ideally run in threadpool, but for debug let's run direct.
-            # Or use sync wrapper? 
-            # Let's use sync wrapper logic if StreamingResponse supports it nicely?
-            # Actually, let's keep it simple.
-            # gen = agent.stream_terraform_gen(request.prompt, request.execution_mode)
-            # for chunk in gen:
-            #    yield chunk
-            yield json.dumps({"type": "log", "content": "DEBUG STATIC"}) + "\n"
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            yield json.dumps({"type": "error", "content": f"WRAPPER CAUGHT: {str(e)}"}) + "\n"
 
-    try:
-        return StreamingResponse(
-            wrapper(),
-            media_type="application/x-ndjson"
-        )
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"Setup Error: {str(e)}"})
 
 @app.post("/agent/layout")
 async def agent_layout(req: PromptRequest):

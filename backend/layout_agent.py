@@ -64,7 +64,7 @@ async def generate_layout_plan(graph_state: dict):
     # Use 'client.aio' to access the async version of the model
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-2.0-pro",
+            model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.0,

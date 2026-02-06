@@ -52,3 +52,17 @@ backend/intent_graph.json
 backend/reasoned_graph.json
 backend/implementation_graph.json
 backend/debug_*.json
+
+# Generated Artifacts (Pipeline)
+backend/main.tf
+backend/test_infra.py
+backend/baseline_test/
+backend/test_dynamic_logs.py
+test_results.txt
+architecture_review.md.resolved
+
+# Terraform Root (if used directly)
+backend/.terraform/
+backend/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup

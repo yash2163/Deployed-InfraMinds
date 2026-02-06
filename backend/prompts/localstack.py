@@ -127,6 +127,40 @@ def get_code_gen_prompt(current_state: str, user_prompt: str) -> str:
         8. **Web Servers**: If the user asks for a web server, you MUST include `user_data` (base64 encoded if needed, or raw heredoc) to install Apache/Nginx.
         9. **HA Networking**: If requesting "High Availability", ensure you create 1 NAT Gateway PER Availability Zone (e.g. nat_a in us-east-1a, nat_b in us-east-1b) and separate Route Tables for each private subnet. Avoid Single Points of Failure.
         
+        --- CRITICAL SECURITY GROUP RULES ---
+        **FORBIDDEN:** NEVER use inline `ingress` or `egress` blocks inside `aws_security_group` resources.
+        **MANDATORY:** ALWAYS generate separate `aws_security_group_rule` resources.
+        **REQUIREMENT:** Each security group MUST have at least one corresponding rule.
+        
+        Example CORRECT pattern:
+        ```hcl
+        resource "aws_security_group" "web" {{
+          vpc_id = aws_vpc.main.id
+          name   = "web-sg"
+        }}
+        
+        resource "aws_security_group_rule" "web_http" {{
+          type              = "ingress"
+          from_port         = 80
+          to_port           = 80
+          protocol          = "tcp"
+          cidr_blocks       = ["0.0.0.0/0"]
+          security_group_id = aws_security_group.web.id
+        }}
+        
+        resource "aws_security_group_rule" "web_egress" {{
+          type              = "egress"
+          from_port         = 0
+          to_port           = 0
+          protocol          = "-1"
+          cidr_blocks       = ["0.0.0.0/0"]
+          security_group_id = aws_security_group.web.id
+        }}
+        ```
+        
+        --- RESOURCE SPECIFIC RESTRICTIONS ---
+        **NO TAGS:** Do NOT add `tags` to: `aws_route`, `aws_security_group_rule`, `aws_route_table_association`.
+        
         --- REQUIRED PROVIDER TEMPLATE ---
         Copy this EXACT provider block - DO NOT add or remove ANY lines:
         ```hcl
