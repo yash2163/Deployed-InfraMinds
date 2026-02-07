@@ -405,6 +405,7 @@ export default function Home() {
               onNodeSelected={handleNodeSelected}
               nodeStatuses={resourceStatuses}
               overrideGraph={visualizedGraph}
+              graphPhase={graphPhase}
             />
 
             {/* Phase Indicator Overlay */}

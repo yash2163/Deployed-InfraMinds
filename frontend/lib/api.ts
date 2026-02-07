@@ -98,8 +98,8 @@ export interface CostReport {
   disclaimer: string;
 }
 
-export const fetchCost = async (): Promise<CostReport> => {
-  const response = await api.get('/cost');
+export const fetchCost = async (phase: string = "implementation"): Promise<CostReport> => {
+  const response = await api.get(`/cost?phase=${phase}`);
   return response.data;
 };
 

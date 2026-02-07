@@ -418,9 +418,10 @@ interface GraphVisualizerProps {
     nodeStatuses?: Record<string, string>;
     terraformCode?: string | null;
     overrideGraph?: GraphState | null;
+    graphPhase?: string | null;
 }
 
-export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terraformCode, overrideGraph }: GraphVisualizerProps) {
+export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terraformCode, overrideGraph, graphPhase }: GraphVisualizerProps) {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
@@ -598,7 +599,8 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         if (!rawState) return;
 
         try {
-            const report = await fetchCost();
+            // Use the current phase if available, otherwise default (handled by api/backend)
+            const report = await fetchCost(graphPhase || "implementation");
             setCostReport(report);
             setShowCostModal(true);
         } catch (error) {

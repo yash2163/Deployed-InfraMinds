@@ -67,10 +67,23 @@ def reset_graph():
     return {"message": "Graph and Session reset"}
 
 @app.get("/cost", response_model=CostReport)
-def get_cost():
+def get_cost(phase: str = "implementation"):
     """Returns the estimated cost of the current infrastructure."""
-    current_resources = agent.export_state().resources
-    return cost_estimator.estimate_costs(current_resources)
+    
+    # Determine which graph to use based on phase
+    resources = []
+    if phase == "intent" and agent.intent_graph:
+        resources = agent.intent_graph.resources
+    elif phase == "reasoned" and agent.reasoned_graph:
+        resources = agent.reasoned_graph.resources
+    elif agent.implementation_graph:
+        resources = agent.implementation_graph.resources
+    
+    # Fallback if specific phase is request but empty, try implementation
+    if not resources and agent.implementation_graph:
+        resources = agent.implementation_graph.resources
+        
+    return cost_estimator.estimate_costs(resources)
 
 class SimulationRequest(BaseModel):
     target_node_id: str
