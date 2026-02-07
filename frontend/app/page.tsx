@@ -409,7 +409,7 @@ export default function Home() {
 
             {/* Phase Indicator Overlay */}
             {graphPhase && (
-              <div className="absolute top-6 right-6 z-10 bg-slate-900/90 backdrop-blur p-3 rounded-lg border border-slate-700 shadow-xl flex flex-col gap-1 items-end">
+              <div className="absolute top-24 left-6 z-10 bg-slate-900 shadow-2xl p-3 rounded-lg border border-slate-800 flex flex-col gap-1 items-start">
                 <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Evolution Phase</span>
                 <span className={`text-sm font-bold capitalize ${graphPhase === 'intent' ? 'text-purple-400' :
                   graphPhase === 'reasoned' ? 'text-blue-400' :

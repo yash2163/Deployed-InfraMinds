@@ -780,11 +780,15 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
     });
 
     return (
-        <div style={{ width: '100%', height: '600px', border: '1px solid #e2e8f0', borderRadius: '12px', position: 'relative', overflow: 'hidden', background: '#f8fafc' }} onClick={() => setContextMenu(null)}>
+        <div style={{ width: '100%', height: '800px', border: '1px solid #1e293b', borderRadius: '12px', position: 'relative', overflow: 'hidden', background: 'radial-gradient(circle at center, #0f172a 0%, #020617 100%)' }} onClick={() => setContextMenu(null)}>
 
             <ReactFlow
                 nodes={renderNodes}
-                edges={edges}
+                edges={edges.map(e => ({
+                    ...e,
+                    animated: true,
+                    style: { ...e.style, stroke: '#94a3b8', strokeWidth: 2 }
+                }))}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
@@ -794,19 +798,19 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 maxZoom={1.5}
                 attributionPosition="bottom-right"
             >
-                <Background color="#cbd5e1" gap={20} size={1} />
+                <Background variant="lines" color="#1e293b" gap={20} size={1} />
                 <Controls showInteractive={false} />
             </ReactFlow>
 
-            {/* Toolbar: Refactor + Toggle Details */}
-            <div className="absolute top-4 right-36 z-10 flex gap-2">
+            {/* Toolbar: Refactor + Toggle Details + Cost */}
+            <div className="absolute top-4 right-4 z-10 flex gap-2">
                 <button
                     onClick={(e) => { e.stopPropagation(); handleRefactorLayout(); }}
                     disabled={isRefactoring}
-                    className={`px-3 py-1.5 text-sm font-medium rounded-md shadow-sm flex items-center gap-2 transition-colors
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md shadow-sm flex items-center gap-2 transition-colors border backdrop-blur-md
                         ${layoutMode === 'professional'
-                            ? 'bg-purple-600 text-white hover:bg-purple-700 border border-purple-500'
-                            : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
+                            ? 'bg-purple-600 text-white hover:bg-purple-700 border-purple-500'
+                            : 'bg-transparent text-slate-100 hover:bg-slate-800/50 border-slate-700'
                         }
                         ${isRefactoring ? 'opacity-70 cursor-wait' : ''}
                     `}
@@ -818,7 +822,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 {layoutMode === 'professional' && (
                     <button
                         onClick={(e) => { e.stopPropagation(); setShowDetails(!showDetails); }}
-                        className="px-3 py-1.5 bg-slate-800 text-slate-300 rounded-md text-sm font-medium hover:bg-slate-700 shadow-sm flex items-center gap-2 border border-slate-600"
+                        className="px-3 py-1.5 bg-transparent text-slate-100 rounded-md text-sm font-medium hover:bg-slate-800/50 shadow-sm flex items-center gap-2 border border-slate-700 backdrop-blur-md"
                         title={showDetails ? "Hide Details (SGs, Policies)" : "Show All Details"}
                     >
                         {showDetails ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -828,9 +832,9 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 {/* Cost Calculation Button */}
                 <button
                     onClick={handleCalculateCost}
-                    className="px-3 py-1.5 text-sm font-medium bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 rounded-md shadow-sm flex items-center gap-2 transition-colors"
+                    className="px-3 py-1.5 text-sm font-medium bg-transparent text-slate-100 hover:bg-slate-800/50 border border-slate-700 rounded-md shadow-sm flex items-center gap-2 transition-colors backdrop-blur-md"
                 >
-                    <DollarSign size={16} className="text-green-600" />
+                    <DollarSign size={16} className="text-emerald-400" />
                     <span>Calculate Cost</span>
                 </button>
             </div>
@@ -852,52 +856,130 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
             )}
 
             {costReport && (
-                <div onClick={() => setShowCostModal(true)} className="absolute bottom-4 left-4 z-10 bg-emerald-50 border border-emerald-200 text-emerald-700 px-3 py-1.5 rounded-md text-xs font-bold shadow-sm cursor-pointer flex items-center gap-1 hover:bg-emerald-100">
+                <div onClick={() => setShowCostModal(true)} className="absolute bottom-4 right-4 z-10 bg-emerald-50 border border-emerald-200 text-emerald-700 px-3 py-1.5 rounded-md text-xs font-bold shadow-sm cursor-pointer flex items-center gap-1 hover:bg-emerald-100">
                     <DollarSign size={14} /> ${costReport.total_monthly_cost.toFixed(2)}/mo
                 </div>
             )}
 
             {showCostModal && costReport && (
-                <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={() => setShowCostModal(false)}>
-                    <div className="bg-white rounded-xl max-w-lg w-full max-h-[80vh] overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                            <h3 className="font-bold text-slate-800">Cost Breakdown</h3>
-                            <button onClick={() => setShowCostModal(false)} className="text-slate-400">✕</button>
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={() => setShowCostModal(false)}>
+                    <div className="bg-slate-900/90 border border-white/10 rounded-xl max-w-lg w-full max-h-[80vh] overflow-hidden shadow-2xl flex flex-col backdrop-blur-md" onClick={e => e.stopPropagation()}>
+
+                        {/* Header */}
+                        <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-950/50">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-emerald-500/10 rounded-lg">
+                                    <DollarSign className="w-5 h-5 text-emerald-400" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-slate-100 text-lg">Cost Analytics</h3>
+                                    <p className="text-xs text-slate-400">Monthly estimates based on current architecture</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setShowCostModal(false)} className="text-slate-500 hover:text-white transition-colors">
+                                <EyeOff size={18} />
+                            </button>
                         </div>
-                        <div className="p-6 overflow-y-auto max-h-[60vh]">
-                            <div className="flex justify-between items-end mb-6">
-                                <span className="text-sm text-slate-500">Total Monthly</span>
-                                <span className="text-3xl font-bold text-emerald-600">${costReport.total_monthly_cost.toFixed(2)}</span>
+
+                        {/* Content */}
+                        <div className="p-6 overflow-y-auto custom-scrollbar">
+
+                            {/* Hero Metric */}
+                            <div className="flex flex-col items-center justify-center py-6 mb-6 bg-slate-800/50 rounded-xl border border-slate-700/50 relative overflow-hidden">
+                                <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent pointer-events-none" />
+                                <span className="text-sm text-slate-400 uppercase tracking-widest font-bold mb-1 z-10">Total Est. Cost</span>
+                                <div className="flex items-baseline gap-1 z-10">
+                                    <span className="text-4xl font-extrabold text-white tracking-tight">${costReport.total_monthly_cost.toFixed(2)}</span>
+                                    <span className="text-sm text-slate-500 font-medium">/mo</span>
+                                </div>
                             </div>
-                            <div className="space-y-3">
-                                {costReport.breakdown.map((item, i) => (
-                                    <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-                                        <div className="flex justify-between font-medium text-slate-700 mb-1">
-                                            <span>{item.resource_type}</span>
-                                            <span>${item.estimated_cost.toFixed(2)}</span>
+
+                            {/* Breakdown List with Bar Visuals */}
+                            <div className="space-y-4">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Resource Breakdown</h4>
+                                {costReport.breakdown.map((item, i) => {
+                                    // Calculate percentage for bar width
+                                    const percent = costReport.total_monthly_cost > 0
+                                        ? (item.estimated_cost / costReport.total_monthly_cost) * 100
+                                        : 0;
+
+                                    return (
+                                        <div key={i} className="group">
+                                            <div className="flex justify-between items-end mb-1 text-sm">
+                                                <span className="text-slate-300 font-medium group-hover:text-white transition-colors">{item.resource_type}</span>
+                                                <span className="text-slate-200 font-mono">${item.estimated_cost.toFixed(2)}</span>
+                                            </div>
+
+                                            {/* Progress Bar Container */}
+                                            <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+                                                <div
+                                                    className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-full transition-all duration-1000 ease-out"
+                                                    style={{ width: `${Math.max(percent, 1)}%` }} // Min 1% visibility
+                                                />
+                                            </div>
+
+                                            {item.explanation && (
+                                                <p className="text-[10px] text-slate-500 mt-1 pl-1 border-l border-slate-700 hidden group-hover:block animate-in fade-in slide-in-from-top-1">
+                                                    {item.explanation}
+                                                </p>
+                                            )}
                                         </div>
-                                        <p className="text-xs text-slate-500">{item.explanation}</p>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="p-4 border-t border-slate-800 bg-slate-950/30 text-center">
+                            <span className="text-[10px] text-slate-500">Estimates powered by Infracost logic (Simulated)</span>
                         </div>
                     </div>
                 </div>
             )}
 
             {selectedDetailNode && (
-                <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={() => setSelectedDetailNode(null)}>
-                    <div className="bg-white rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                            <div>
-                                <h3 className="font-bold text-slate-800">{selectedDetailNode.id}</h3>
-                                <span className="text-xs font-mono text-slate-500">{selectedDetailNode.type}</span>
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={() => setSelectedDetailNode(null)}>
+                    <div className="bg-[#020617]/80 backdrop-blur-xl border border-emerald-500/30 shadow-[0_0_40px_rgba(16,185,129,0.15)] rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+
+                        {/* Header */}
+                        <div className="p-6 border-b border-emerald-500/20 flex justify-between items-center bg-transparent">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-emerald-500/10 rounded-lg border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+                                    <Box className="w-5 h-5 text-emerald-400" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-slate-100 text-lg tracking-wide">{selectedDetailNode.id}</h3>
+                                    <p className="text-xs text-emerald-400/70 font-mono uppercase tracking-wider">{selectedDetailNode.type}</p>
+                                </div>
                             </div>
-                            <button onClick={() => setSelectedDetailNode(null)} className="text-slate-400 hover:text-red-500">✕</button>
+                            <button onClick={() => setSelectedDetailNode(null)} className="text-slate-500 hover:text-emerald-400 transition-colors">
+                                <EyeOff size={18} />
+                            </button>
                         </div>
-                        <div className="p-6 overflow-y-auto">
-                            <div className="bg-slate-900 rounded-lg p-4 overflow-x-auto">
-                                <pre className="text-xs font-mono text-blue-300">{JSON.stringify(selectedDetailNode.properties, null, 2)}</pre>
+
+                        {/* Content */}
+                        <div className="p-6 overflow-y-auto custom-scrollbar">
+                            <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">Configuration Properties</h4>
+                            <div className="space-y-2">
+                                {selectedDetailNode.properties && Object.entries(selectedDetailNode.properties).map(([key, value], i) => (
+                                    <div key={i} className="group p-3 rounded-lg border border-transparent hover:border-emerald-500/30 hover:bg-white/5 transition-all duration-300 flex justify-between items-center">
+                                        <span className="text-xs text-slate-400 uppercase tracking-wider font-bold group-hover:text-emerald-400/80 transition-colors">{key.replace(/_/g, ' ')}</span>
+                                        <span className="font-mono text-emerald-300 text-sm tracking-tight text-right break-all ml-4">
+                                            {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                                        </span>
+                                    </div>
+                                ))}
+                                {(!selectedDetailNode.properties || Object.keys(selectedDetailNode.properties).length === 0) && (
+                                    <div className="text-slate-500 text-sm italic p-4 text-center">No properties available for this resource.</div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="p-4 border-t border-emerald-500/20 bg-[#020617]/50 backdrop-blur-md flex justify-between items-center">
+                            <span className="text-[10px] text-slate-500">Resource Configuration</span>
+                            <div className="flex gap-2">
+                                <span className="text-[10px] px-2 py-0.5 rounded border border-emerald-500/20 text-emerald-500/50">LIVE</span>
                             </div>
                         </div>
                     </div>
