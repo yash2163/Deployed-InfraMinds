@@ -199,3 +199,28 @@ User Instruction:
   "reasoning": "Brief description of the change"
 }}
 """
+
+def get_blast_radius_prompt(graph_json: str, target_node_id: str) -> str:
+    return f"""
+You are a **Chaos Engineering Expert** and **AWS Solutions Architect**.
+
+Task: Analyze the provided Infrastructure Graph and identify the **Blast Radius** if the node `{target_node_id}` is compromised, deleted, or fails.
+
+Graph State:
+{graph_json}
+
+Target Node: {target_node_id}
+
+--- ANALYSIS RULES ---
+1. **Direct Dependencies**: Identify nodes that directly rely on the target (e.g., an Instance inside a deleted Subnet).
+2. **Cascading Failures**: Identify secondary failures (e.g., if a DB is deleted, the App connecting to it fails).
+3. **Stateful Data Loss**: Highlight resources where deletion implies data loss (RDS, S3).
+4. **Network Isolation**: If a Security Group or Route Table is removed, identify what loses connectivity.
+
+--- OUTPUT FORMAT (JSON ONLY) ---
+{{
+  "target_node": "{target_node_id}",
+  "affected_node_ids": [ "list", "of", "string", "ids" ],
+  "reasoning": "Brief explanation of why these nodes are affected."
+}}
+"""

@@ -15,7 +15,7 @@ from schemas import GraphState, Resource, Edge, PlanDiff, IntentAnalysis, BlastA
 from prompts.localstack import get_think_prompt, get_plan_prompt, get_code_gen_prompt
 from prompts.vision import get_vision_prompt
 # Import New Stage Prompts
-from prompts.stages import get_intent_text_prompt, get_policy_prompt, get_expansion_prompt, get_modification_prompt
+from prompts.stages import get_intent_text_prompt, get_policy_prompt, get_expansion_prompt, get_modification_prompt, get_blast_radius_prompt
 
 import PIL.Image
 import io
@@ -32,7 +32,8 @@ class InfraAgent:
         self.graph = nx.DiGraph() # This represents the current 'Implementation' graph
         
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        self.model_name = "gemini-flash-latest"  # Stable alias from confirmed list 
+        # self.model_name = "gemini-flash-latest"  # Stable alias from confirmed list 
+        self.model_name = "gemini-3-flash-preview"
         
         self.pipeline = PipelineManager(self.client, self.model_name)
         
@@ -420,7 +421,7 @@ class InfraAgent:
                 error_str = str(e)
                 if "503" in error_str or "429" in error_str:
                      api_attempts += 1
-                     yield send("log", f"⚠️ API Busy (Expand Attempt {api_attempts}/{max_api_attempts}). Retrying in 5s...")
+                     yield ("log", f"⚠️ API Busy (Expand Attempt {api_attempts}/{max_api_attempts}). Retrying in 5s...")
                      time.sleep(5)
                 else:
                     raise e
@@ -1332,37 +1333,40 @@ class InfraAgent:
 
     def simulate_blast_radius(self, target_node_id: str) -> List[str]:
         """
-        Simulates the blast radius of removing or compromising a node.
+        Simulates the blast radius of removing or compromising a node using LLM reasoning.
         Returns a list of affected node IDs (downstream dependencies).
         """
         if not self.graph.has_node(target_node_id):
             return []
         
-        # Use NetworkX descendants (assuming edges flow TOWARDS dependencies or FROM dependencies?)
-        # Convention: A -> B means A depends on B (or data flows A to B?)
-        # In this graph, usually Source -> Target. 
-        # If I kill a DB, the App utilizing it dies. 
-        # Relation usually: "App -> connects_to -> DB".
-        # So if DB dies, App is affected. Accessing DB is dependency.
-        # So we want ANCESTORS (Who points to me?).
-        # Wait, if "App connects to DB", edge is App->DB.
-        # If DB is gone, App is broken.
-        # So we need PREDECESSORS (Ancestors).
-        
-        # However, let's treat "blast radius" as "What effectively breaks?".
-        # If edge is "VPC -> contains -> Subnet", killing VPC kills Subnet.
-        # Edge is "contains" (Parent -> Child).
-        # So if VPC (Source) dies, Subnet (Target) dies.
-        # Here we want DESCENDANTS.
-        
-        # So it depends on relation type.
-        # FOR SIMPLICITY: We assume cascading failure downstream.
         try:
-            descendants = nx.descendants(self.graph, target_node_id)
-            return list(descendants)
+            # 1. Export Graph Context (Simplified)
+            current_state = self.export_state().model_dump_json()
+            
+            # 2. Get Reasoning Prompt
+            prompt = get_blast_radius_prompt(current_state, target_node_id)
+            
+            # 3. Ask Gemini
+            print(f"DEBUG: asking AI for blast radius of {target_node_id}")
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            data = json.loads(response.text)
+            
+            affected = data.get("affected_node_ids", [])
+            # Fallback: Always include descendants just in case AI misses obvious ones
+            # fallback_descendants = list(nx.descendants(self.graph, target_node_id))
+            
+            # Return Union
+            return list(set(affected))
+            # return list(set(affected + fallback_descendants))
+
         except Exception as e:
             print(f"Blast radius error: {e}")
-            return []
+            # Fallback to static analysis
+            return list(nx.descendants(self.graph, target_node_id))
 
     def explain_impact(self, target_node_id: str, affected_nodes: List[str]) -> BlastAnalysis:
         """

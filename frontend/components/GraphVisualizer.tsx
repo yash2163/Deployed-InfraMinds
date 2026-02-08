@@ -12,11 +12,13 @@ import ReactFlow, {
     MarkerType,
     Handle,
     Position,
+    BackgroundVariant,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { fetchGraph, GraphState, simulateBlastRadius, fetchCost, CostReport, generateGraphLayout } from '../lib/api';
 import { DollarSign, Layers, Box, Database, Globe, Shield, Activity, Archive, Cloud, Server, Router, Lock, Zap, Sparkles, Eye, EyeOff } from 'lucide-react';
 import dagre from 'dagre';
+import { AgentNeuralStream } from './AgentNeuralStream';
 
 /* -------------------------------------------------------------------------- */
 /*                                CONSTANTS                                   */
@@ -436,6 +438,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
     const [showCostModal, setShowCostModal] = useState(false);
     const [lastCostHash, setLastCostHash] = useState<string>("");
     const [affectedNodeIds, setAffectedNodeIds] = useState<Set<string>>(new Set());
+    const [targetBlastNodeId, setTargetBlastNodeId] = useState<string | null>(null);
     const [rawState, setRawState] = useState<GraphState | null>(null);
     const [showCode, setShowCode] = useState(false);
     const [contextMenu, setContextMenu] = useState<any>(null);
@@ -464,6 +467,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
 
         // Prepare Nodes with styling and icons
         const allRawNodes = rawState.resources.map(res => {
+            const isTarget = targetBlastNodeId === res.id;
             const isAffected = affectedNodeIds.has(res.id);
 
             // Determine color based on resource type
@@ -499,7 +503,8 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                     headerColor,
                     status: res.status,
                     properties: res.properties,
-                    isAffected
+                    isAffected,
+                    isTarget
                 },
                 style: {
                     width: RESOURCE_WIDTH,
@@ -551,20 +556,33 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
 
         const finalEdges = rawState.edges
             .filter(e => validNodeIds.has(e.source) && validNodeIds.has(e.target)) // NEW: Filter dangling edges
-            .map(e => ({
-                id: `e-${e.source}-${e.target}`,
-                source: e.source,
-                target: e.target,
-                type: layoutMode === 'professional' ? 'step' : 'smoothstep', // Orthogonal for pro mode
-                animated: false,
-                style: { stroke: COLORS.EDGE, strokeWidth: 1.5, zIndex: 999 },
-                markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.EDGE },
-                zIndex: 999
-            }));
+            .map(e => {
+                // Edge is affected if it connects the target to an affected node, or two affected nodes
+                // Flow should be from Target -> Downstream
+                const isTargetToAffected = targetBlastNodeId === e.source && affectedNodeIds.has(e.target);
+                const isAffectedToAffected = affectedNodeIds.has(e.source) && affectedNodeIds.has(e.target);
+                const isEdgeAffected = isTargetToAffected || isAffectedToAffected;
+
+                return {
+                    id: `e-${e.source}-${e.target}`,
+                    source: e.source,
+                    target: e.target,
+                    type: layoutMode === 'professional' ? 'step' : 'smoothstep', // Orthogonal for pro mode
+                    animated: isEdgeAffected,
+                    style: {
+                        stroke: isEdgeAffected ? '#f97316' : COLORS.EDGE, // Orange flow
+                        strokeWidth: isEdgeAffected ? 2 : 1.5,
+                        strokeDasharray: isEdgeAffected ? '5 5' : undefined,
+                        zIndex: isEdgeAffected ? 1000 : 999
+                    },
+                    markerEnd: { type: MarkerType.ArrowClosed, color: isEdgeAffected ? '#f97316' : COLORS.EDGE },
+                    zIndex: isEdgeAffected ? 1000 : 999
+                };
+            });
 
         setNodes(finalNodes);
         setEdges(finalEdges);
-    }, [rawState, affectedNodeIds, layoutMode, layoutOverrides, showDetails]);
+    }, [rawState, affectedNodeIds, targetBlastNodeId, layoutMode, layoutOverrides, showDetails]);
 
     useEffect(() => {
         refreshGraph();
@@ -621,8 +639,9 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         if (action === 'delete') {
             simulateBlastRadius(contextMenu.id).then(result => {
                 const impacted = new Set<string>(result.affected_nodes as string[]);
-                impacted.add(contextMenu.id);
+                // Do NOT add contextMenu.id to impacted set, keep it separate as target
                 setAffectedNodeIds(impacted);
+                setTargetBlastNodeId(contextMenu.id);
                 if (onNodeSelected) onNodeSelected(contextMenu.id);
             });
         } else if (action === 'details') {
@@ -635,22 +654,33 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
     // Custom Node Types
     const nodeTypes = useMemo(() => ({
         card: ({ data }: any) => {
-            const bgColor = data.isAffected ? '#fee2e2' : '#ffffff';
-            const borderColor = data.isAffected ? '#ef4444' : '#e5e7eb';
-            const boxShadow = data.isAffected ? '0 0 0 2px #fecaca' : '0 1px 3px rgba(0,0,0,0.1)';
+            const isTarget = data.isTarget;
+            const isAffected = data.isAffected;
+
+            let bgClass = "bg-white";
+            let borderClass = "border-slate-200";
+            let ringClass = "";
+            let shadowClass = "shadow-sm hover:shadow-md";
+
+            if (isTarget) {
+                bgClass = "bg-red-500/20"; // Red background for target
+                borderClass = "border-red-500";
+                ringClass = "ring-2 ring-red-500 animate-pulse";
+                shadowClass = "shadow-[0_0_20px_rgba(239,68,68,0.6)]";
+            } else if (isAffected) {
+                bgClass = "bg-orange-50"; // Orange glow for affected
+                borderClass = "border-orange-500";
+                ringClass = "";
+                shadowClass = "shadow-[0_0_15px_rgba(249,115,22,0.5)]";
+            }
 
             return (
-                <div style={{
-                    width: RESOURCE_WIDTH,
-                    height: RESOURCE_HEIGHT,
-                    background: bgColor,
-                    border: `1px solid ${borderColor}`,
-                    borderRadius: '6px',
-                    boxShadow,
-                    overflow: 'hidden',
-                    display: 'flex',
-                    flexDirection: 'column'
-                }}>
+                <div className={`relative flex flex-col overflow-hidden rounded-md transition-all duration-300 ${bgClass} ${borderClass} ${ringClass} ${shadowClass} ${isTarget ? 'scale-110 z-50' : ''}`}
+                    style={{
+                        width: RESOURCE_WIDTH,
+                        height: RESOURCE_HEIGHT,
+                        borderWidth: '1px'
+                    }}>
                     <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
 
                     {/* Header Bar */}
@@ -695,7 +725,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                     </div>
 
                     <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
-                </div>
+                </div >
             );
         },
         group: ({ data }: any) => {
@@ -786,11 +816,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
 
             <ReactFlow
                 nodes={renderNodes}
-                edges={edges.map(e => ({
-                    ...e,
-                    animated: true,
-                    style: { ...e.style, stroke: '#94a3b8', strokeWidth: 2 }
-                }))}
+                edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
@@ -800,7 +826,20 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 maxZoom={1.5}
                 attributionPosition="bottom-right"
             >
-                <Background variant="lines" color="#1e293b" gap={20} size={1} />
+                <div className="absolute inset-0 pointer-events-none z-0 opacity-20"
+                    style={{
+                        backgroundImage: 'linear-gradient(#334155 1px, transparent 1px), linear-gradient(90deg, #334155 1px, transparent 1px)',
+                        backgroundSize: '40px 40px',
+                        animation: 'pan 100s linear infinite'
+                    }}
+                />
+                <style jsx>{`
+                    @keyframes pan {
+                        0% { background-position: 0% 0%; }
+                        100% { background-position: 100% 100%; }
+                    }
+                `}</style>
+                <Background variant={BackgroundVariant.Lines} color="#1e293b" gap={20} size={1} />
                 <Controls showInteractive={false} />
             </ReactFlow>
 
@@ -858,10 +897,17 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
             )}
 
             {costReport && (
-                <div onClick={() => setShowCostModal(true)} className="absolute bottom-4 right-4 z-10 bg-emerald-50 border border-emerald-200 text-emerald-700 px-3 py-1.5 rounded-md text-xs font-bold shadow-sm cursor-pointer flex items-center gap-1 hover:bg-emerald-100">
-                    <DollarSign size={14} /> ${costReport.total_monthly_cost.toFixed(2)}/mo
+                <div className="absolute bottom-4 right-4 z-10 p-[1px] rounded-lg bg-gradient-to-r from-yellow-400 to-amber-600 shadow-lg cursor-pointer hover:scale-105 transition-transform group" onClick={() => setShowCostModal(true)}>
+                    <div className="bg-slate-900/90 backdrop-blur-md px-4 py-2 rounded-lg flex items-center gap-2">
+                        <div className="p-1 bg-yellow-500/10 rounded-full group-hover:bg-yellow-500/20 transition-colors">
+                            <DollarSign size={14} className="text-yellow-500" />
+                        </div>
+                        <span className="text-xs font-bold text-yellow-500">${costReport.total_monthly_cost.toFixed(2)}/mo</span>
+                    </div>
                 </div>
             )}
+
+            <AgentNeuralStream isActive={graphPhase === 'plan' || graphPhase === 'apply'} phase={graphPhase || 'idle'} />
 
             {showCostModal && costReport && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={() => setShowCostModal(false)}>
