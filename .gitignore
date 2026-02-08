@@ -38,3 +38,56 @@ test-2.jpg
 backend/models_dump.json
 backend/terraform_workspace/terraform.tfstate*
 backend/terraform_workspace/.terraform/
+
+
+
+
+# Node.js
+node_modules/
+dist/
+.next/
+.turbo
+.cache/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+*.env
+*.env.*
+
+# Logs and Databases
+*.log
+*.sqlite
+backend.log
+frontend.log
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+*.tfvars
+*.tfvars.json
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+
+# Project Specific Artifacts
+graphs/
+test_architectures/
+test-2.jpg
+~$*.docx
+backend/models_dump.json
+backend/graph_export.json
+backend/graph_state.json
+backend/terraform_workspace/terraform.tfstate*
+backend/terraform_workspace/.terraform/
+backend/terraform_workspace/test_infra.py
