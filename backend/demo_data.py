@@ -600,7 +600,7 @@ resource "aws_elasticache_replication_group" "cache" {
 }"""
 
 
-DEMO_IMAGE_PATH = "/test-2.jpg"
+DEMO_IMAGE_PATH = "test-2.jpg"
 
 DEMO_LOGS = [
     "Initializing InfraMinds Cloud Engine...",
