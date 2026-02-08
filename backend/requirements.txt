@@ -6,3 +6,12 @@ python-multipart
 requests
 google-genai
 python-dotenv
+fastapi
+uvicorn
+networkx
+pydantic
+python-multipart
+requests
+google-generativeai
+python-dotenv
+Pillow
