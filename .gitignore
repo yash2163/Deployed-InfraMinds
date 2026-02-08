@@ -33,7 +33,6 @@ Thumbs.db
 # Project specific
 graphs/
 test_architectures/
-test-2.jpg
 ~$framinds technical document (gemini).docx
 backend/models_dump.json
 backend/terraform_workspace/terraform.tfstate*
