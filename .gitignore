@@ -83,7 +83,6 @@ Thumbs.db
 # Project Specific Artifacts
 graphs/
 test_architectures/
-test-2.jpg
 ~$*.docx
 backend/models_dump.json
 backend/graph_export.json
