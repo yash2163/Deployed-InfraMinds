@@ -1,16 +1,16 @@
-# backend/Dockerfile
 FROM python:3.10-slim
 
-# Install system dependencies and Terraform CLI
+# Install system dependencies and Terraform manually
 RUN apt-get update && apt-get install -y \
     curl \
-    gnupg \
-    software-properties-common \
     unzip \
-    && curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add - \
-    && apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-    && apt-get update && apt-get install -y terraform \
-    && apt-get clean
+    && curl -tfSL https://releases.hashicorp.com/terraform/1.7.0/terraform_1.7.0_linux_amd64.zip -o terraform.zip \
+    && unzip terraform.zip \
+    && mv terraform /usr/local/bin/ \
+    && rm terraform.zip \
+    && apt-get purge -y --auto-remove unzip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
