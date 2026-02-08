@@ -9,6 +9,7 @@ from agent import InfraAgent
 from schemas import GraphState, PlanDiff, IntentAnalysis, BlastAnalysis, PipelineResult
 from cost import CostEstimator, CostReport
 from layout_agent import generate_layout_plan
+from demo_data import DEMO_GRAPH, DEMO_TERRAFORM, DEMO_LOGS, DEMO_PROMPT, DEMO_IMAGE_PATH
 
 app = FastAPI(title="InfraMinds Agent Core")
 
@@ -24,6 +25,9 @@ app.add_middleware(
 agent = InfraAgent()
 cost_estimator = CostEstimator()
 
+# DEMO MODE CONFIGURATION
+DEMO_MODE = True # Set to True for the Hackathon/Demo Deployment
+
 
 class PromptRequest(BaseModel):
     prompt: str
@@ -34,6 +38,17 @@ async def agent_deploy(request: PromptRequest):
     """
     Streaming Endpoint for Real-Time UI Updates.
     """
+    if DEMO_MODE:
+        async def mock_stream():
+            for log in DEMO_LOGS:
+                yield json.dumps({"type": "log", "content": log}) + "\n"
+                await asyncio.sleep(0.3) # Simulate processing time
+            
+            # Send the final Terraform code as a result
+            yield json.dumps({"type": "result", "payload": {"hcl_code": DEMO_TERRAFORM}}) + "\n"
+            
+        return StreamingResponse(mock_stream(), media_type="application/x-ndjson")
+
     return StreamingResponse(
         agent.stream_terraform_gen(request.prompt, request.execution_mode),
         media_type="application/x-ndjson"
@@ -42,6 +57,8 @@ async def agent_deploy(request: PromptRequest):
 
 @app.post("/agent/plan_stream")
 async def agent_plan_stream(request: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Streaming Endpoint for Phase 1 (Planning).
     """
@@ -70,20 +87,9 @@ def reset_graph():
 def get_cost(phase: str = "implementation"):
     """Returns the estimated cost of the current infrastructure."""
     
-    # Determine which graph to use based on phase
-    resources = []
-    if phase == "intent" and agent.intent_graph:
-        resources = agent.intent_graph.resources
-    elif phase == "reasoned" and agent.reasoned_graph:
-        resources = agent.reasoned_graph.resources
-    elif agent.implementation_graph:
-        resources = agent.implementation_graph.resources
-    
-    # Fallback if specific phase is request but empty, try implementation
-    if not resources and agent.implementation_graph:
-        resources = agent.implementation_graph.resources
-        
-    return cost_estimator.estimate_costs(resources)
+    # Return hardcoded demo cost values
+    from demo_data import DEMO_COST
+    return CostReport(**DEMO_COST)
 
 class SimulationRequest(BaseModel):
     target_node_id: str
@@ -104,6 +110,8 @@ class PromptRequest(BaseModel):
 
 @app.post("/agent/think")
 async def agent_think(request: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Analyzes intent. Returns a stream of thought logs + final JSON.
     """
@@ -114,6 +122,8 @@ async def agent_think(request: PromptRequest):
 
 @app.post("/agent/generate_pipeline", response_model=PipelineResult)
 def run_pipeline(req: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Runs the full self-healing pipeline: Draft -> Critique -> Refine -> Test -> Deploy.
     """
@@ -123,6 +133,8 @@ def run_pipeline(req: PromptRequest):
 
 @app.post("/agent/plan")
 async def agent_plan(request: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     # Keep plan synchronous for now as it's policy based and fast enough,
     # or upgrade later. The user asked for "Thinking" stream primarily.
     # Let's check Agent.plan_changes - it has a loop!
@@ -135,6 +147,8 @@ async def agent_plan(request: PromptRequest):
 
 @app.post("/agent/apply")
 def agent_apply(diff: PlanDiff):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Commits the plan to the graph (Action).
     """
@@ -143,6 +157,8 @@ def agent_apply(diff: PlanDiff):
 
 @app.post("/agent/plan_graph")
 def agent_plan_graph(req: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Phase 1 of two-stage deployment: Generate and apply graph plan only.
     Returns plan + confirmation requirements.
@@ -178,10 +194,23 @@ def agent_plan_graph(req: PromptRequest):
 
 @app.get("/agent/health")
 def agent_health():
-    return {"status": "ok", "version": "debug_v1"}
+    return {"status": "ok", "version": "debug_v1", "demo_mode": DEMO_MODE}
+
+@app.get("/agent/demo_data")
+def get_demo_data():
+    """Returns the static data for the guided demo."""
+    return {
+        "graph": DEMO_GRAPH,
+        "terraform": DEMO_TERRAFORM,
+        "logs": DEMO_LOGS,
+        "prompt": DEMO_PROMPT,
+        "image": DEMO_IMAGE_PATH
+    }
 
 @app.post("/agent/approve")
 def agent_approve():
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Commits the pending plan to the active graph.
     """
@@ -219,6 +248,8 @@ def agent_approve():
 
 @app.post("/agent/reject")
 def agent_reject():
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Rejects the pending plan and reverts 'proposed' changes.
     """
@@ -258,6 +289,8 @@ def simulate_explain(req: ExplainRequest):
 
 @app.post("/agent/modify")
 async def agent_modify(request: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     CRITICAL: Interactive Refinement.
     Modifies the CURRENT graph phase based on user feedback.
@@ -275,6 +308,8 @@ class ConfirmRequest(BaseModel):
 
 @app.post("/graph/confirm_change")
 async def confirm_change(req: ConfirmRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Phase 2.5: Interactive Confirmation.
     Accepts or Discards the pending graph modification.
@@ -300,6 +335,8 @@ def get_session():
 
 @app.post("/agent/visualize")
 async def agent_visualize(file: UploadFile = File(...)):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Unified Entry: Image -> Intent.
     """
@@ -311,6 +348,8 @@ async def agent_visualize(file: UploadFile = File(...)):
 
 @app.post("/agent/approve/intent")
 async def approve_intent(request: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """Triggers Phase 2: Unified Reasoned Expansion (Intent -> Policies -> Verify -> Architecture)."""
     if not agent.intent_graph:
         raise HTTPException(400, "No Intent Graph to approve.")
@@ -324,6 +363,8 @@ async def approve_intent(request: PromptRequest):
 
 @app.post("/agent/layout")
 async def agent_layout(req: PromptRequest):
+    if DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Action disabled in Demo Mode.")
     """
     Experimental: Uses Gemini to calculate a 'LucidChart-Style' Layout Plan.
     Returns: JSON Map of { node_id: { x, y, width, height, parentId } }

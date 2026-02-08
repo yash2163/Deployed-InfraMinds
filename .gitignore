@@ -1,68 +1,40 @@
-# OS & IDE
-.DS_Store
-.vscode/
-.idea/
-~$*
+# Node details
+node_modules/
+dist/
+.next/
+.turbo
+.cache/
 
-# Python / Backend
+# Python details
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
+*.py[cod]
+*$py.class
+.venv/
 venv/
+ENV/
+env/
 .env
-backend/.env
-backend/.venv/
-backend/venv/
-backend/__pycache__/
-backend/graph_state.json
-backend/graph_export.json
+
+# Logs and databases
+*.log
+backend.log
+frontend.log
 
 # Terraform
-backend/terraform_workspace/.terraform/
-backend/terraform_workspace/*.tfstate
-backend/terraform_workspace/*.tfstate.*
-backend/terraform_workspace/.terraform.lock.hcl
-backend/terraform_workspace/localstack_providers_override.tf
-
-# Node / Frontend
-node_modules/
-npm-debug.log
-yarn-error.log
-.next/
-dist/
-build/
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-frontend/node_modules/
-frontend/.next/
-
-
-# InfraMinds Specific
-.gemini/
-backend/graphs/
-backend/decision_log.json
-backend/session_meta.json
-backend/pending_graph.json
-backend/intent_graph.json
-backend/reasoned_graph.json
-backend/implementation_graph.json
-backend/debug_*.json
-
-# Generated Artifacts (Pipeline)
-backend/main.tf
-backend/test_infra.py
-backend/baseline_test/
-backend/test_dynamic_logs.py
-test_results.txt
-architecture_review.md.resolved
-
-# Terraform Root (if used directly)
-backend/.terraform/
-backend/.terraform.lock.hcl
+.terraform/
 *.tfstate
 *.tfstate.backup
+.terraform.lock.hcl
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project specific
+graphs/
+test_architectures/
+test-2.jpg
+~$framinds technical document (gemini).docx
+backend/models_dump.json
+backend/terraform_workspace/terraform.tfstate*
+backend/terraform_workspace/.terraform/

@@ -462,6 +462,27 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         }
     }, [overrideGraph, isInitialLoad]);
 
+    // Living Graph Effect
+    const [animatedEdges, setAnimatedEdges] = useState<Set<string>>(new Set());
+
+    useEffect(() => {
+        if (!rawState || !isInitialLoad) return;
+
+        // Find a dependency chain to highlight (e.g., Gateway -> VPC -> Subnet)
+        // For simplicity, pick the first 3 connected edges
+        const edgesToAnimate = new Set<string>();
+        const potentialEdges = rawState.edges.slice(0, 5);
+        potentialEdges.forEach(e => edgesToAnimate.add(`e-${e.source}-${e.target}`));
+
+        if (edgesToAnimate.size > 0) {
+            setAnimatedEdges(edgesToAnimate);
+            setTimeout(() => {
+                setAnimatedEdges(new Set());
+            }, 1200); // 1.2s duration as requested
+        }
+
+    }, [rawState, isInitialLoad]);
+
     useEffect(() => {
         if (!rawState) return;
 
@@ -554,35 +575,45 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
         // Create a Set of valid node IDs for O(1) lookup
         const validNodeIds = new Set(finalNodes.map(n => n.id));
 
-        const finalEdges = rawState.edges
-            .filter(e => validNodeIds.has(e.source) && validNodeIds.has(e.target)) // NEW: Filter dangling edges
-            .map(e => {
+        // Deduplicate edges using Map (last edge wins if duplicates exist)
+        const edgeMap = new Map<string, any>();
+
+        rawState.edges
+            .filter(e => validNodeIds.has(e.source) && validNodeIds.has(e.target))
+            .forEach(e => {
+                const edgeId = `e-${e.source}-${e.target}`;
+
                 // Edge is affected if it connects the target to an affected node, or two affected nodes
-                // Flow should be from Target -> Downstream
                 const isTargetToAffected = targetBlastNodeId === e.source && affectedNodeIds.has(e.target);
                 const isAffectedToAffected = affectedNodeIds.has(e.source) && affectedNodeIds.has(e.target);
                 const isEdgeAffected = isTargetToAffected || isAffectedToAffected;
 
-                return {
-                    id: `e-${e.source}-${e.target}`,
+                const isLiving = animatedEdges.has(edgeId);
+
+                edgeMap.set(edgeId, {
+                    id: edgeId,
                     source: e.source,
                     target: e.target,
-                    type: layoutMode === 'professional' ? 'step' : 'smoothstep', // Orthogonal for pro mode
-                    animated: isEdgeAffected,
+                    type: layoutMode === 'professional' ? 'step' : 'smoothstep',
+                    animated: isEdgeAffected || isLiving,
                     style: {
-                        stroke: isEdgeAffected ? '#f97316' : COLORS.EDGE, // Orange flow
-                        strokeWidth: isEdgeAffected ? 2 : 1.5,
+                        stroke: isEdgeAffected ? '#f97316' : (isLiving ? '#60a5fa' : COLORS.EDGE),
+                        strokeWidth: isEdgeAffected ? 2 : (isLiving ? 3 : 1.5),
                         strokeDasharray: isEdgeAffected ? '5 5' : undefined,
-                        zIndex: isEdgeAffected ? 1000 : 999
+                        zIndex: isEdgeAffected ? 1000 : (isLiving ? 500 : 999),
+                        opacity: isLiving ? 0.8 : 1,
+                        filter: isLiving ? 'drop-shadow(0 0 4px rgba(96, 165, 250, 0.8))' : 'none'
                     },
-                    markerEnd: { type: MarkerType.ArrowClosed, color: isEdgeAffected ? '#f97316' : COLORS.EDGE },
+                    markerEnd: { type: MarkerType.ArrowClosed, color: isEdgeAffected ? '#f97316' : (isLiving ? '#60a5fa' : COLORS.EDGE) },
                     zIndex: isEdgeAffected ? 1000 : 999
-                };
+                });
             });
+
+        const finalEdges = Array.from(edgeMap.values());
 
         setNodes(finalNodes);
         setEdges(finalEdges);
-    }, [rawState, affectedNodeIds, targetBlastNodeId, layoutMode, layoutOverrides, showDetails]);
+    }, [rawState, affectedNodeIds, targetBlastNodeId, layoutMode, layoutOverrides, showDetails, animatedEdges]);
 
     useEffect(() => {
         refreshGraph();
@@ -822,6 +853,7 @@ export default function GraphVisualizer({ onNodeSelected, nodeStatuses, terrafor
                 onNodeClick={onNodeClick}
                 nodeTypes={nodeTypes}
                 fitView
+                defaultViewport={{ x: 0, y: 0, zoom: 1.15 }}
                 minZoom={0.1}
                 maxZoom={1.5}
                 attributionPosition="bottom-right"

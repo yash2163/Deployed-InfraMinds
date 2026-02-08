@@ -1,0 +1,1049 @@
+{
+  "graph_phase": "implementation",
+  "graph_version": "b1a4e2f8-7d6c-4b9a-9e1f-8c03d5e6f1a0",
+  "resources": [
+    {
+      "id": "vpc",
+      "type": "aws_vpc",
+      "properties": {
+        "label": "Main VPC",
+        "cidr_block": "10.0.0.0/16",
+        "enable_dns_hostnames": true,
+        "enable_dns_support": true,
+        "tags": {
+          "Name": "Main VPC"
+        }
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "public-subnet-a",
+      "type": "aws_subnet",
+      "properties": {
+        "label": "Public Subnet AZ-a",
+        "vpc_id": "vpc",
+        "cidr_block": "10.0.1.0/24",
+        "availability_zone": "us-east-1a",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "Public Subnet AZ-a"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "public-subnet-b",
+      "type": "aws_subnet",
+      "properties": {
+        "label": "Public Subnet AZ-b",
+        "vpc_id": "vpc",
+        "cidr_block": "10.0.2.0/24",
+        "availability_zone": "us-east-1b",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "Public Subnet AZ-b"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-subnet-a",
+      "type": "aws_subnet",
+      "properties": {
+        "label": "Private Subnet AZ-a",
+        "vpc_id": "vpc",
+        "cidr_block": "10.0.101.0/24",
+        "availability_zone": "us-east-1a",
+        "tags": {
+          "Name": "Private Subnet AZ-a"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-subnet-b",
+      "type": "aws_subnet",
+      "properties": {
+        "label": "Private Subnet AZ-b",
+        "vpc_id": "vpc",
+        "cidr_block": "10.0.102.0/24",
+        "availability_zone": "us-east-1b",
+        "tags": {
+          "Name": "Private Subnet AZ-b"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-subnet-a",
+      "type": "aws_subnet",
+      "properties": {
+        "label": "Firewall Subnet AZ-a",
+        "vpc_id": "vpc",
+        "cidr_block": "10.0.3.0/24",
+        "availability_zone": "us-east-1a",
+        "tags": {
+          "Name": "Firewall Subnet AZ-a"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-subnet-b",
+      "type": "aws_subnet",
+      "properties": {
+        "label": "Firewall Subnet AZ-b",
+        "vpc_id": "vpc",
+        "cidr_block": "10.0.4.0/24",
+        "availability_zone": "us-east-1b",
+        "tags": {
+          "Name": "Firewall Subnet AZ-b"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "igw",
+      "type": "aws_internet_gateway",
+      "properties": {
+        "label": "Internet Gateway",
+        "vpc_id": "vpc",
+        "tags": {
+          "Name": "Main IGW"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "nat-eip",
+      "type": "aws_eip",
+      "properties": {
+        "label": "NAT Gateway EIP AZ-a",
+        "domain": "vpc"
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "nat-gateway",
+      "type": "aws_nat_gateway",
+      "properties": {
+        "label": "NAT Gateway AZ-a",
+        "allocation_id": "nat-eip",
+        "subnet_id": "public-subnet-a"
+      },
+      "parent_id": "public-subnet-a",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "nat-eip-b",
+      "type": "aws_eip",
+      "properties": {
+        "label": "NAT Gateway EIP AZ-b",
+        "domain": "vpc"
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "nat-gateway-b",
+      "type": "aws_nat_gateway",
+      "properties": {
+        "label": "NAT Gateway AZ-b",
+        "allocation_id": "nat-eip-b",
+        "subnet_id": "public-subnet-b"
+      },
+      "parent_id": "public-subnet-b",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "public-rt",
+      "type": "aws_route_table",
+      "properties": {
+        "label": "Public Route Table",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "public-route",
+      "type": "aws_route",
+      "properties": {
+        "label": "Public Default Route",
+        "route_table_id": "public-rt",
+        "destination_cidr_block": "0.0.0.0/0",
+        "gateway_id": "igw"
+      },
+      "parent_id": "public-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "public-rt-assoc-a",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "public-subnet-a",
+        "route_table_id": "public-rt"
+      },
+      "parent_id": "public-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "public-rt-assoc-b",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "public-subnet-b",
+        "route_table_id": "public-rt"
+      },
+      "parent_id": "public-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-rt",
+      "type": "aws_route_table",
+      "properties": {
+        "label": "Private Route Table AZ-a",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-route",
+      "type": "aws_route",
+      "properties": {
+        "label": "Private Default Route AZ-a",
+        "route_table_id": "private-rt",
+        "destination_cidr_block": "0.0.0.0/0",
+        "nat_gateway_id": "nat-gateway"
+      },
+      "parent_id": "private-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-rt-assoc-a",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "private-subnet-a",
+        "route_table_id": "private-rt"
+      },
+      "parent_id": "private-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-rt-b",
+      "type": "aws_route_table",
+      "properties": {
+        "label": "Private Route Table AZ-b",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-route-b",
+      "type": "aws_route",
+      "properties": {
+        "label": "Private Default Route AZ-b",
+        "route_table_id": "private-rt-b",
+        "destination_cidr_block": "0.0.0.0/0",
+        "nat_gateway_id": "nat-gateway-b"
+      },
+      "parent_id": "private-rt-b",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "private-rt-assoc-b",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "private-subnet-b",
+        "route_table_id": "private-rt-b"
+      },
+      "parent_id": "private-rt-b",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-rt",
+      "type": "aws_route_table",
+      "properties": {
+        "label": "Firewall Route Table",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-route",
+      "type": "aws_route",
+      "properties": {
+        "label": "Firewall Default Route",
+        "route_table_id": "firewall-rt",
+        "destination_cidr_block": "0.0.0.0/0",
+        "gateway_id": "igw"
+      },
+      "parent_id": "firewall-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-rt-assoc-a",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "firewall-subnet-a",
+        "route_table_id": "firewall-rt"
+      },
+      "parent_id": "firewall-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-rt-assoc-b",
+      "type": "aws_route_table_association",
+      "properties": {
+        "subnet_id": "firewall-subnet-b",
+        "route_table_id": "firewall-rt"
+      },
+      "parent_id": "firewall-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "igw-rt",
+      "type": "aws_route_table",
+      "properties": {
+        "label": "IGW Ingress Route Table",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "igw-route-a",
+      "type": "aws_route",
+      "properties": {
+        "route_table_id": "igw-rt",
+        "destination_cidr_block": "10.0.1.0/24",
+        "vpc_endpoint_id": "firewall-vpce-a"
+      },
+      "parent_id": "igw-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "igw-route-b",
+      "type": "aws_route",
+      "properties": {
+        "route_table_id": "igw-rt",
+        "destination_cidr_block": "10.0.2.0/24",
+        "vpc_endpoint_id": "firewall-vpce-b"
+      },
+      "parent_id": "igw-rt",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "igw-rt-assoc",
+      "type": "aws_ec2_gateway_route_table_association",
+      "properties": {
+        "gateway_id": "igw",
+        "route_table_id": "igw-rt"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "lb-sg",
+      "type": "aws_security_group",
+      "properties": {
+        "label": "Load Balancer SG",
+        "description": "Allow public HTTP traffic",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "lb-sg-ingress-http",
+      "type": "aws_security_group_rule",
+      "properties": {
+        "type": "ingress",
+        "from_port": 80,
+        "to_port": 80,
+        "protocol": "tcp",
+        "cidr_blocks": [
+          "0.0.0.0/0"
+        ],
+        "security_group_id": "lb-sg"
+      },
+      "parent_id": "lb-sg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "lb-sg-egress-all",
+      "type": "aws_security_group_rule",
+      "properties": {
+        "type": "egress",
+        "from_port": 8080,
+        "to_port": 8080,
+        "protocol": "tcp",
+        "destination_security_group_id": "app-sg",
+        "security_group_id": "lb-sg"
+      },
+      "parent_id": "lb-sg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-sg",
+      "type": "aws_security_group",
+      "properties": {
+        "label": "App Server SG",
+        "description": "Allow traffic from LB and allow outbound to DB/Cache",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-sg-ingress-lb",
+      "type": "aws_security_group_rule",
+      "properties": {
+        "type": "ingress",
+        "from_port": 8080,
+        "to_port": 8080,
+        "protocol": "tcp",
+        "source_security_group_id": "lb-sg",
+        "security_group_id": "app-sg"
+      },
+      "parent_id": "app-sg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-sg-egress-all",
+      "type": "aws_security_group_rule",
+      "properties": {
+        "type": "egress",
+        "from_port": 0,
+        "to_port": 0,
+        "protocol": "-1",
+        "cidr_blocks": [
+          "0.0.0.0/0"
+        ],
+        "security_group_id": "app-sg"
+      },
+      "parent_id": "app-sg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "db-sg",
+      "type": "aws_security_group",
+      "properties": {
+        "label": "Database SG",
+        "description": "Allow traffic from App Servers",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "db-sg-ingress-app",
+      "type": "aws_security_group_rule",
+      "properties": {
+        "type": "ingress",
+        "from_port": 5432,
+        "to_port": 5432,
+        "protocol": "tcp",
+        "source_security_group_id": "app-sg",
+        "security_group_id": "db-sg"
+      },
+      "parent_id": "db-sg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "cache-sg",
+      "type": "aws_security_group",
+      "properties": {
+        "label": "Cache SG",
+        "description": "Allow traffic from App Servers",
+        "vpc_id": "vpc"
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "cache-sg-ingress-app",
+      "type": "aws_security_group_rule",
+      "properties": {
+        "type": "ingress",
+        "from_port": 6379,
+        "to_port": 6379,
+        "protocol": "tcp",
+        "source_security_group_id": "app-sg",
+        "security_group_id": "cache-sg"
+      },
+      "parent_id": "cache-sg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall-policy",
+      "type": "aws_networkfirewall_firewall_policy",
+      "properties": {
+        "name": "AllowAllPolicy",
+        "firewall_policy": {
+          "stateless_default_actions": [
+            "aws:pass"
+          ],
+          "stateless_fragment_default_actions": [
+            "aws:pass"
+          ]
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "firewall",
+      "type": "aws_networkfirewall_firewall",
+      "properties": {
+        "label": "FIREWALL",
+        "description": "AWS Network Firewall inspecting inbound traffic",
+        "vpc_id": "vpc",
+        "firewall_policy_arn": "firewall-policy",
+        "subnet_mapping": [
+          {
+            "subnet_id": "firewall-subnet-a"
+          },
+          {
+            "subnet_id": "firewall-subnet-b"
+          }
+        ]
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "load-balancer",
+      "type": "aws_lb",
+      "properties": {
+        "label": "LOAD BALANCER",
+        "internal": false,
+        "load_balancer_type": "application",
+        "security_groups": [
+          "lb-sg"
+        ],
+        "subnets": [
+          "public-subnet-a",
+          "public-subnet-b"
+        ]
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "lb-listener",
+      "type": "aws_lb_listener",
+      "properties": {
+        "label": "HTTP Listener",
+        "load_balancer_arn": "load-balancer",
+        "port": 80,
+        "protocol": "HTTP",
+        "default_action": [
+          {
+            "type": "forward",
+            "target_group_arn": "app-tg"
+          }
+        ]
+      },
+      "parent_id": "load-balancer",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-tg",
+      "type": "aws_lb_target_group",
+      "properties": {
+        "label": "App Server Target Group",
+        "port": 8080,
+        "protocol": "HTTP",
+        "vpc_id": "vpc",
+        "health_check": {
+          "protocol": "HTTP",
+          "path": "/health"
+        }
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-tg-attachment-1",
+      "type": "aws_lb_target_group_attachment",
+      "properties": {
+        "target_group_arn": "app-tg",
+        "target_id": "app-server-1"
+      },
+      "parent_id": "app-tg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-tg-attachment-2",
+      "type": "aws_lb_target_group_attachment",
+      "properties": {
+        "target_group_arn": "app-tg",
+        "target_id": "app-server-2"
+      },
+      "parent_id": "app-tg",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "ec2-iam-role",
+      "type": "aws_iam_role",
+      "properties": {
+        "name": "ec2_ssm_role",
+        "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "ec2-ssm-policy-attachment",
+      "type": "aws_iam_role_policy_attachment",
+      "properties": {
+        "role": "ec2-iam-role",
+        "policy_arn": "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      },
+      "parent_id": "ec2-iam-role",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "ec2-instance-profile",
+      "type": "aws_iam_instance_profile",
+      "properties": {
+        "name": "ec2_ssm_instance_profile",
+        "role": "ec2-iam-role"
+      },
+      "parent_id": "ec2-iam-role",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-server-1",
+      "type": "aws_instance",
+      "properties": {
+        "label": "APP SERVER",
+        "instance_type": "t3.medium",
+        "ami": "ami-0c55b159cbfafe1f0",
+        "subnet_id": "private-subnet-a",
+        "vpc_security_group_ids": [
+          "app-sg"
+        ],
+        "iam_instance_profile": "ec2-instance-profile",
+        "root_block_device": {
+          "encrypted": true
+        }
+      },
+      "parent_id": "private-subnet-a",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "app-server-2",
+      "type": "aws_instance",
+      "properties": {
+        "label": "APP SERVER",
+        "instance_type": "t3.medium",
+        "ami": "ami-0c55b159cbfafe1f0",
+        "subnet_id": "private-subnet-b",
+        "vpc_security_group_ids": [
+          "app-sg"
+        ],
+        "iam_instance_profile": "ec2-instance-profile",
+        "root_block_device": {
+          "encrypted": true
+        }
+      },
+      "parent_id": "private-subnet-b",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "db-subnet-group",
+      "type": "aws_db_subnet_group",
+      "properties": {
+        "label": "Database Subnet Group",
+        "name": "main-db-subnet-group",
+        "subnet_ids": [
+          "private-subnet-a",
+          "private-subnet-b"
+        ]
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "database",
+      "type": "aws_db_instance",
+      "properties": {
+        "label": "DATABASE",
+        "engine": "postgres",
+        "instance_class": "db.t3.small",
+        "storage_encrypted": true,
+        "multi_az": true,
+        "publicly_accessible": false,
+        "db_subnet_group_name": "db-subnet-group",
+        "vpc_security_group_ids": [
+          "db-sg"
+        ]
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "cache-subnet-group",
+      "type": "aws_elasticache_subnet_group",
+      "properties": {
+        "label": "Cache Subnet Group",
+        "name": "main-cache-subnet-group",
+        "subnet_ids": [
+          "private-subnet-a",
+          "private-subnet-b"
+        ]
+      },
+      "parent_id": "vpc",
+      "status": "planned",
+      "metadata": {}
+    },
+    {
+      "id": "cache",
+      "type": "aws_elasticache_replication_group",
+      "properties": {
+        "label": "CACHE",
+        "replication_group_id": "main-cache-replication-group",
+        "engine": "redis",
+        "node_type": "cache.t3.small",
+        "at_rest_encryption_enabled": true,
+        "automatic_failover_enabled": true,
+        "num_cache_clusters": 2,
+        "subnet_group_name": "cache-subnet-group",
+        "security_group_ids": [
+          "cache-sg"
+        ]
+      },
+      "parent_id": null,
+      "status": "planned",
+      "metadata": {}
+    }
+  ],
+  "edges": [
+    {
+      "source": "igw",
+      "target": "vpc",
+      "relation": "attaches_to"
+    },
+    {
+      "source": "nat-eip",
+      "target": "nat-gateway",
+      "relation": "associates_with"
+    },
+    {
+      "source": "nat-gateway",
+      "target": "public-subnet-a",
+      "relation": "resides_in"
+    },
+    {
+      "source": "nat-eip-b",
+      "target": "nat-gateway-b",
+      "relation": "associates_with"
+    },
+    {
+      "source": "nat-gateway-b",
+      "target": "public-subnet-b",
+      "relation": "resides_in"
+    },
+    {
+      "source": "public-route",
+      "target": "public-rt",
+      "relation": "part_of"
+    },
+    {
+      "source": "private-route",
+      "target": "private-rt",
+      "relation": "part_of"
+    },
+    {
+      "source": "private-route-b",
+      "target": "private-rt-b",
+      "relation": "part_of"
+    },
+    {
+      "source": "firewall-route",
+      "target": "firewall-rt",
+      "relation": "part_of"
+    },
+    {
+      "source": "igw-route-a",
+      "target": "igw-rt",
+      "relation": "part_of"
+    },
+    {
+      "source": "igw-route-b",
+      "target": "igw-rt",
+      "relation": "part_of"
+    },
+    {
+      "source": "public-rt-assoc-a",
+      "target": "public-subnet-a",
+      "relation": "associated_with"
+    },
+    {
+      "source": "public-rt-assoc-b",
+      "target": "public-subnet-b",
+      "relation": "associated_with"
+    },
+    {
+      "source": "private-rt-assoc-a",
+      "target": "private-subnet-a",
+      "relation": "associated_with"
+    },
+    {
+      "source": "private-rt-assoc-b",
+      "target": "private-subnet-b",
+      "relation": "associated_with"
+    },
+    {
+      "source": "firewall-rt-assoc-a",
+      "target": "firewall-subnet-a",
+      "relation": "associated_with"
+    },
+    {
+      "source": "firewall-rt-assoc-b",
+      "target": "firewall-subnet-b",
+      "relation": "associated_with"
+    },
+    {
+      "source": "igw-rt-assoc",
+      "target": "igw",
+      "relation": "associates"
+    },
+    {
+      "source": "igw-rt-assoc",
+      "target": "igw-rt",
+      "relation": "associates"
+    },
+    {
+      "source": "firewall",
+      "target": "firewall-subnet-a",
+      "relation": "uses_endpoint_in"
+    },
+    {
+      "source": "firewall",
+      "target": "firewall-subnet-b",
+      "relation": "uses_endpoint_in"
+    },
+    {
+      "source": "firewall",
+      "target": "firewall-policy",
+      "relation": "uses_policy"
+    },
+    {
+      "source": "igw-route-a",
+      "target": "firewall",
+      "relation": "targets_endpoint"
+    },
+    {
+      "source": "igw-route-b",
+      "target": "firewall",
+      "relation": "targets_endpoint"
+    },
+    {
+      "source": "load-balancer",
+      "target": "public-subnet-a",
+      "relation": "resides_in"
+    },
+    {
+      "source": "load-balancer",
+      "target": "public-subnet-b",
+      "relation": "resides_in"
+    },
+    {
+      "source": "load-balancer",
+      "target": "lb-sg",
+      "relation": "uses_security_group"
+    },
+    {
+      "source": "lb-listener",
+      "target": "load-balancer",
+      "relation": "listens_on"
+    },
+    {
+      "source": "lb-listener",
+      "target": "app-tg",
+      "relation": "forwards_to"
+    },
+    {
+      "source": "app-tg-attachment-1",
+      "target": "app-server-1",
+      "relation": "targets_resource"
+    },
+    {
+      "source": "app-tg-attachment-2",
+      "target": "app-server-2",
+      "relation": "targets_resource"
+    },
+    {
+      "source": "app-server-1",
+      "target": "app-sg",
+      "relation": "uses_security_group"
+    },
+    {
+      "source": "app-server-2",
+      "target": "app-sg",
+      "relation": "uses_security_group"
+    },
+    {
+      "source": "app-server-1",
+      "target": "ec2-instance-profile",
+      "relation": "uses_iam_profile"
+    },
+    {
+      "source": "app-server-2",
+      "target": "ec2-instance-profile",
+      "relation": "uses_iam_profile"
+    },
+    {
+      "source": "ec2-instance-profile",
+      "target": "ec2-iam-role",
+      "relation": "contains_role"
+    },
+    {
+      "source": "ec2-ssm-policy-attachment",
+      "target": "ec2-iam-role",
+      "relation": "attaches_to"
+    },
+    {
+      "source": "app-sg-ingress-lb",
+      "target": "app-sg",
+      "relation": "rule_for"
+    },
+    {
+      "source": "db-sg-ingress-app",
+      "target": "db-sg",
+      "relation": "rule_for"
+    },
+    {
+      "source": "cache-sg-ingress-app",
+      "target": "cache-sg",
+      "relation": "rule_for"
+    },
+    {
+      "source": "database",
+      "target": "db-sg",
+      "relation": "uses_security_group"
+    },
+    {
+      "source": "database",
+      "target": "db-subnet-group",
+      "relation": "uses_subnet_group"
+    },
+    {
+      "source": "cache",
+      "target": "cache-sg",
+      "relation": "uses_security_group"
+    },
+    {
+      "source": "cache",
+      "target": "cache-subnet-group",
+      "relation": "uses_subnet_group"
+    },
+    {
+      "source": "app-server-1",
+      "target": "database",
+      "relation": "connects_to"
+    },
+    {
+      "source": "app-server-1",
+      "target": "cache",
+      "relation": "connects_to"
+    },
+    {
+      "source": "app-server-2",
+      "target": "database",
+      "relation": "connects_to"
+    },
+    {
+      "source": "app-server-2",
+      "target": "cache",
+      "relation": "connects_to"
+    }
+  ],
+  "metadata": {
+    "cost_estimate": "$380/mo",
+    "cost_breakdown": {
+      "nat-gateway": "$30/mo",
+      "nat-gateway-b": "$30/mo",
+      "load-balancer": "$20/mo",
+      "lb-listener": "$20/mo",
+      "app-tg": "$20/mo",
+      "app-tg-attachment-1": "$20/mo",
+      "app-tg-attachment-2": "$20/mo",
+      "ec2-instance-profile": "$40/mo",
+      "app-server-1": "$40/mo",
+      "app-server-2": "$40/mo",
+      "db-subnet-group": "$60/mo",
+      "database": "$40/mo"
+    },
+    "architecture_version_id": "a0fc8ccc-2ccd-4e4e-8329-aedf5be9adab"
+  },
+  "reasoning": null
+}

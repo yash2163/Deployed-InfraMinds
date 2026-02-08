@@ -12,13 +12,13 @@ cd ..
 # Start Frontend
 echo "Starting Frontend (Next.js)..."
 cd frontend
-npm run dev -- -p 3001 &
+npm run dev -- -p 3000 &
 FRONTEND_PID=$!
 cd ..
 
 echo "InfraMinds is running!"
 echo "Backend: http://localhost:8000"
-echo "Frontend: http://localhost:3001"
+echo "Frontend: http://localhost:3000"
 echo "Press CTRL+C to stop."
 
 trap "kill $BACKEND_PID $FRONTEND_PID; exit" SIGINT SIGTERM
